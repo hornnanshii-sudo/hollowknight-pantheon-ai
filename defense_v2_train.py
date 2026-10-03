@@ -31,6 +31,7 @@ class DefenseEnv(gym.Env):
             for _ in range((offset//3)*2):s=self.bridge.request(f'tick {offset%3} 0')
             if s['hp']==9:break
         else:raise RuntimeError('Cannot establish a valid full-health episode start')
+        if s['body_type']!=0:raise RuntimeError('Player physics must be Dynamic before training')
         if any(s.get(f'equippedCharm_{c}') for c in (35,12,10,22,40)):raise RuntimeError('Passive damage charm enabled')
         self.state=s;self.started=s['time'];self.start_hp=s['hp'];self.damage_start=s['damage_dealt'];self.wall_start=time.monotonic();self.features=Features();self.reward=Reward();self.last_action=None;self.loss=0;self.steps=0;self.dt_sum=0;self.dt_min=1e9;self.dt_max=0;self.offset=offset;self.reward_totals={}
         return self.observe(s,reset=True),{}
@@ -46,7 +47,7 @@ class DefenseEnv(gym.Env):
         reward=self.reward.score(self.state,s,min(dt,max(0,self.horizon-(self.state['time']-self.started))),hurt)+self.reward.terminal(success)
         for key,val in self.reward.breakdown.items():self.reward_totals[key]=self.reward_totals.get(key,0)+val
         self.last_action=int(action);self.state=s
-        info=dict(is_success=success,target_seconds=self.horizon,fight_seconds=min(elapsed,self.horizon),start_hp=self.start_hp,hp=s['hp'],hp_lost=self.loss,effective_hits=0,damage_dealt=0,out_of_view=outside_view(s),watchdog_timeout=trunc,estimated_avoidances=self.reward.avoidances,near_fraction=self.reward.near_fraction,far_seconds=self.reward.far_seconds,reward_parts=self.reward_totals.copy(),dt_mean=self.dt_sum/self.steps,dt_min=self.dt_min,dt_max=self.dt_max,request_seconds=latency,initial_offset=self.offset)
+        info=dict(is_success=success,target_seconds=self.horizon,fight_seconds=min(elapsed,self.horizon),start_hp=self.start_hp,hp=s['hp'],hp_lost=self.loss,effective_hits=0,damage_dealt=0,out_of_view=outside_view(s),watchdog_timeout=trunc,estimated_avoidances=self.reward.avoidances,near_fraction=self.reward.near_fraction,far_seconds=self.reward.far_seconds,reward_parts=self.reward_totals.copy(),dt_mean=self.dt_sum/self.steps,dt_min=self.dt_min,dt_max=self.dt_max,request_seconds=latency,initial_offset=self.offset,hero_y=s['y'],body_type=s['body_type'],grounded=s['grounded'],ground_probe=s['hero_ground_probe'])
         return self.observe(s,dt),reward,term,trunc,info
     def close(self):self.bridge.close()
 

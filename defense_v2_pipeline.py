@@ -1,5 +1,5 @@
 """Five budget blocks, measured mastery gates, 30 validation episodes per block."""
-import json,math,subprocess,sys,time,shutil
+import argparse,json,math,subprocess,sys,time,shutil,zipfile
 from pathlib import Path
 ROOT=Path(__file__).resolve().parent;OUT=ROOT/'artifacts/defense-v2-100k-pipeline';HORIZONS=(10,20,40,80,120)
 
@@ -25,13 +25,17 @@ def run(args,log):
     with log.open('w',encoding='utf-8') as f:
         subprocess.run([sys.executable,'-u',str(ROOT/'defense_v2_train.py'),*args],cwd=ROOT,stdout=f,stderr=subprocess.STDOUT,check=True,timeout=14400)
 def main():
-    if (OUT/'status.json').exists():raise RuntimeError('Existing run: refuse to silently restart or exceed budget')
-    reports=[];checkpoint=None;level=0;best={}
+    p=argparse.ArgumentParser();p.add_argument('--resume-first-block',type=Path);a=p.parse_args()
+    if (OUT/'status.json').exists() and not a.resume_first_block:raise RuntimeError('Existing run: refuse to silently restart or exceed budget')
+    reports=[];checkpoint=a.resume_first_block;level=0;best={};resumed=0
+    if checkpoint:
+        state=json.loads((OUT/'status.json').read_text());resumed=json.loads(zipfile.ZipFile(checkpoint).read('data'))['num_timesteps']
+        if state['stage']!=1 or state['phase']!='training' or state['completed'] or not 0<resumed<20000 or resumed%1000:raise RuntimeError('Unsafe resume boundary')
     try:
         for stage in range(1,6):
             horizon=HORIZONS[level];name=f'defense-v2-stage-{stage}'
             status(stage=stage,phase='training',horizon_seconds=horizon,completed=reports)
-            args=['--steps','20000','--horizon',str(horizon),'--run-name',name]
+            args=['--steps',str(20000-resumed if stage==1 else 20000),'--horizon',str(horizon),'--run-name',name]
             if checkpoint:args+=['--checkpoint',str(checkpoint)]
             run(args,OUT/f'stage-{stage}-train.log');checkpoint=ROOT/'artifacts'/name/'latest.zip'
             status(stage=stage,phase='evaluation',horizon_seconds=horizon,completed=reports)

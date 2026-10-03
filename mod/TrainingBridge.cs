@@ -271,6 +271,13 @@ public class TrainingBridge : BaseUnityPlugin {
         var rb=hero!=null?hero.GetComponent<Rigidbody2D>():null; var br=boss!=null?boss.GetComponent<Rigidbody2D>():null;
         Vector2 v=rb!=null?rb.linearVelocity:Vector2.zero, bv=br!=null?br.linearVelocity:Vector2.zero;
         bool ready=!resetting && Time.time-loadedAt>2f && scene=="GG_Gruz_Mother" && hero!=null && boss!=null && sawBoss && !won && pd.health>0 && !hero.cState.transitioning;
+        // The direct dream arena entry can retain its transition Kinematic body.
+        // Restore the normal player's Dynamic body once entry is ready; otherwise
+        // gravity and Terrain exit contacts never happen, enabling repeated jumps.
+        if(ready && !displayChecked && rb!=null && rb.bodyType==RigidbodyType2D.Kinematic) {
+            rb.bodyType=RigidbodyType2D.Dynamic;
+            Logger.LogInfo("Restored normal Dynamic player physics after direct arena entry");
+        }
         // Direct arena entry can leave the normal transition fade covering the
         // screen. Use the game's own fail-safe event, only after entry is ready.
         if(ready && !displayChecked && GameCameras.instance!=null) {
@@ -303,6 +310,8 @@ public class TrainingBridge : BaseUnityPlugin {
             }
         }
         string skills=GeometryJson(hero)+view+BoundsJson("hero_",hero!=null?hero.gameObject:null)+BoundsJson("boss_",boss!=null?boss.gameObject:null);
+        skills+=",\"hero_gravity\":"+(rb!=null?rb.gravityScale:0).ToString(System.Globalization.CultureInfo.InvariantCulture)+",\"hero_ground_probe\":"+(hero!=null && (bool)AccessTools.Method(typeof(HeroController),"CheckTouchingGround").Invoke(hero,new object[0])?1:0);
+        skills+=",\"world_gravity_y\":"+Physics2D.gravity.y.ToString(System.Globalization.CultureInfo.InvariantCulture)+",\"body_type\":"+(rb!=null?(int)rb.bodyType:-1)+",\"body_constraints\":"+(rb!=null?(int)rb.constraints:-1);
         string phase="";string[] phaseNames=new string[0];
         if(boss!=null) foreach(var f in boss.GetComponents<PlayMakerFSM>())
             if(f.FsmName.IndexOf("Control",StringComparison.OrdinalIgnoreCase)>=0) { phase=f.ActiveStateName;phaseNames=Array.ConvertAll(f.FsmStates,state=>state.Name);Array.Sort(phaseNames,StringComparer.Ordinal); break; }
