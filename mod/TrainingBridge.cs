@@ -17,11 +17,12 @@ public class TrainingBridge : BaseUnityPlugin {
     TcpListener listener;
     Queue<Request> requests = new Queue<Request>();
     bool busy;
+    bool defenseOnly;
     int deferPrevious;
     float lastContact;
     Dictionary<OneAxisInputControl, int> inputs = new Dictionary<OneAxisInputControl, int>();
     static TrainingBridge self;
-    bool[] held = new bool[8], previous = new bool[8];
+    bool[] held = new bool[9], previous = new bool[9];
     HealthManager boss;
     int maxBossHp;
     int effectiveHits, damageDealt;
@@ -87,7 +88,7 @@ public class TrainingBridge : BaseUnityPlugin {
     void Update() {
         if(inputs.Count==0 && InputHandler.Instance!=null && InputHandler.Instance.inputActions!=null) {
             var a=InputHandler.Instance.inputActions;
-            OneAxisInputControl[] controls={a.left,a.right,a.jump,a.attack,a.dash,a.down,a.quickCast,a.up};
+            OneAxisInputControl[] controls={a.left,a.right,a.jump,a.attack,a.dash,a.down,a.quickCast,a.up,a.focus};
             for(int i=0;i<controls.Length;i++) inputs[controls[i]]=i;
             Logger.LogInfo("Input bound");
         }
@@ -104,7 +105,8 @@ public class TrainingBridge : BaseUnityPlugin {
             try {
                 string[] parts=r.text.Split(' ');
                 pulseMask=int.Parse(parts[1]); pulseBits=int.Parse(parts[2]);
-                if(pulseMask<0 || pulseMask>255 || pulseBits<0 || pulseBits>255) throw new ArgumentException();
+                if(pulseMask<0 || pulseMask>511 || pulseBits<0 || pulseBits>511) throw new ArgumentException();
+                if(defenseOnly && (pulseMask & ~23)!=0) throw new ArgumentException();
                 for(int i=0;i<held.Length;i++) held[i]=((pulseMask & ~pulseBits)&(1<<i))!=0;
             } catch(Exception) { r.result="{\"error\":\"invalid pulse\"}"; }
             // Keep release visible to a complete rendered input frame.
@@ -117,7 +119,9 @@ public class TrainingBridge : BaseUnityPlugin {
             }
         }
         try {
-            if(r.text.StartsWith("speed ")) {
+            if(r.text=="mode dodge") defenseOnly=true;
+            else if(r.text=="mode combat") defenseOnly=false;
+            else if(r.text.StartsWith("speed ")) {
                 float speed=float.Parse(r.text.Substring(6),System.Globalization.CultureInfo.InvariantCulture);
                 if(speed!=1f && speed!=2f) throw new ArgumentException();
                 Time.timeScale=speed;
@@ -131,8 +135,8 @@ public class TrainingBridge : BaseUnityPlugin {
                 PlayerData.instance.bossStatueTargetLevel=0;
                 GameManager.instance.BeginSceneTransition(new GameManager.SceneLoadInfo { SceneName="GG_Gruz_Mother", EntryGateName="door_dreamEnter", EntryDelay=0f, Visualization=GameManager.SceneLoadVisualizations.GodsAndGlory });
             } else if(r.text.StartsWith("step ")) {
-                int mask=int.Parse(r.text.Substring(5)); for(int i=0;i<held.Length;i++) held[i]=(mask&(1<<i))!=0;
-            } else if(r.text=="release") { Array.Clear(held,0,held.Length); Time.timeScale=1f; }
+                int mask=int.Parse(r.text.Substring(5)); if(defenseOnly && (mask & ~23)!=0) throw new ArgumentException(); for(int i=0;i<held.Length;i++) held[i]=(mask&(1<<i))!=0;
+            } else if(r.text=="release") { Array.Clear(held,0,held.Length); Time.timeScale=1f; defenseOnly=false; }
         } catch(Exception e) { r.result="{\"error\":\""+e.GetType().Name+"\"}"; }
         if(stepping && r.result==null) for(int i=0;i<3;i++) yield return new WaitForFixedUpdate();
         if(r.result==null) { try { r.result=State(); } catch(Exception e) { r.result="{\"error\":\""+e.GetType().Name+"\"}"; Logger.LogError(e); } }
@@ -144,6 +148,12 @@ public class TrainingBridge : BaseUnityPlugin {
         if(f==null) throw new MissingFieldException(target.GetType().Name,name);
         object value=f.GetValue(target);
         return value is bool ? ((bool)value?"1":"0") : Convert.ToString(value,System.Globalization.CultureInfo.InvariantCulture);
+    }
+    static string BoundsJson(string prefix, GameObject obj) {
+        var c=obj!=null?obj.GetComponent<Collider2D>():null;
+        Bounds b=c!=null?c.bounds:new Bounds(obj!=null?obj.transform.position:Vector3.zero,Vector3.zero);
+        return string.Format(System.Globalization.CultureInfo.InvariantCulture,
+            ",\"{0}cx\":{1},\"{0}cy\":{2},\"{0}ex\":{3},\"{0}ey\":{4}",prefix,b.center.x,b.center.y,b.extents.x,b.extents.y);
     }
     string State() {
         var hero=HeroController.instance; var pd=PlayerData.instance;
@@ -177,7 +187,14 @@ public class TrainingBridge : BaseUnityPlugin {
         string payload=string.Format(System.Globalization.CultureInfo.InvariantCulture,
             "{{\"scene\":\"{0}\",\"ready\":{1},\"won\":{2},\"hp\":{3},\"boss_hp\":{4},\"boss_max_hp\":{5},\"soul\":{6},\"x\":{7},\"y\":{8},\"vx\":{9},\"vy\":{10},\"bx\":{11},\"by\":{12},\"bvx\":{13},\"bvy\":{14},\"grounded\":{15},\"frame\":{16},\"time\":{17}}}",
             scene,ready.ToString().ToLower(),won.ToString().ToLower(),pd!=null?pd.health:0,boss!=null?boss.hp:0,maxBossHp,pd!=null?pd.MPCharge:0,p.x,p.y,v.x,v.y,b.x,b.y,bv.x,bv.y,hero!=null&&hero.cState.onGround?1:0,Time.frameCount,Time.time);
-        string skills="";
+        string skills=BoundsJson("hero_",hero!=null?hero.gameObject:null)+BoundsJson("boss_",boss!=null?boss.gameObject:null);
+        string phase="";
+        if(boss!=null) foreach(var f in boss.GetComponents<PlayMakerFSM>())
+            if(f.FsmName.IndexOf("Control",StringComparison.OrdinalIgnoreCase)>=0) { phase=f.ActiveStateName; break; }
+        skills+=",\"boss_phase\":\""+phase.Replace("\\","\\\\").Replace("\"","\\\"")+"\"";
+        skills+=",\"facing_right\":"+Numeric(hero!=null?hero.cState:null,"facingRight");
+        foreach(string n in new string[]{"equippedCharm_35","equippedCharm_12","equippedCharm_10","equippedCharm_22","equippedCharm_40"})
+            skills+=",\""+n+"\":"+Numeric(pd,n);
         foreach(string name in new string[]{"shadowDashTimer","dashCooldownTimer","attack_cooldown","nailChargeTimer","nailChargeTime"})
             skills+=",\""+name+"\":"+Numeric(hero,name);
         foreach(string name in new string[]{"invulnerable","shadowDashing","dashing","spellQuake"})
