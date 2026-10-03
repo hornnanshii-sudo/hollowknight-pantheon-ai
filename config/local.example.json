@@ -1,0 +1,8 @@
+{
+  "game_dir": "D:/steam/steamapps/common/Hollow Knight",
+  "artifact_dir": "artifacts",
+  "control_hz": 20,
+  "num_envs": 1,
+  "device": "cpu",
+  "seed": 42
+}

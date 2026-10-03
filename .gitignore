@@ -1,0 +1,43 @@
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+config/local.json
+*.pem
+*.key
+# Python and editor caches
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.idea/
+.vscode/
+# Game files, saves, training outputs and media stay local
+game/
+saves/
+artifacts/
+checkpoints/
+replays/
+logs/
+runs/
+datasets/
+*.dat
+*.dll
+*.exe
+*.pth
+*.pt
+*.onnx
+*.zip
+*.mp4
+*.mkv
+*.avi
+*.mov
+*.webm
+*.png
+*.jpg
+*.jpeg
+*.gif
+# C# build outputs
+bin/
+obj/
