@@ -28,6 +28,13 @@ def summary(es):
     r['healing_completed']=sum(e['healing_completed'] for e in es)/len(es)
     for key in ('corner_seconds','disengaged_seconds','survived_120s'):
         r[key]=sum(e.get(key,0) for e in es)/len(es)
+    dashes=sum(e.get('dash_count',0) for e in es)
+    duration=sum(e['fight_seconds'] for e in es)
+    r['dashes_per_minute']=60*dashes/max(duration,1e-6)
+    r['unnecessary_dash_fraction']=sum(e.get('unnecessary_dashes',0) for e in es)/max(dashes,1)
+    r['dash_followup_hurt_fraction']=sum(e.get('dash_followup_hurts',0) for e in es)/max(dashes,1)
+    for key in ('dash_count','unnecessary_dashes','approach_dashes','threat_dashes','dash_followup_hurts'):
+        r[key]=sum(e.get(key,0) for e in es)/len(es)
     return r
 
 def progression(task,spent,passed,streak):
@@ -93,7 +100,8 @@ def main():
             result=summary(es);passed=gate(task,result)
             advance,reason,streak=progression(task,state['steps']-state['task_start'],passed,state['streak'])
             report=dict(stage=stage,task=task,steps=state['steps'],target_seconds=120,
-                        evaluation=result,gate_passed=passed,advance_reason=reason)
+                        evaluation=result,gate_passed=passed,advance_reason=reason,
+                        reward_revision=state.get('reward_revision','initial'))
             state['completed'].append(report)
             (OUT/f'stage-{stage}-report.json').write_text(json.dumps(report,indent=2),encoding='utf-8')
             (OUT/f'stage-{stage}-report.md').write_text(

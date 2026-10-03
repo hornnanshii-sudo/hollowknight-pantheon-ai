@@ -92,6 +92,9 @@ class SingleBossEnv(DefenseEnv):
                   focus_attempts=self.focus_attempts,unsafe_focus=self.unsafe_focus,dive_attempts=self.dive_attempts,dive_effective=self.dive_effective)
         info.update(survived_120s=survived,disengaged_seconds=self.reward.disengaged_seconds,
                     corner_seconds=self.reward.corner_seconds,qualified_engagement=self.reward.qualified_engagement)
+        info.update(dash_count=self.reward.dash_count,unnecessary_dashes=self.reward.unnecessary_dashes,
+                    approach_dashes=self.reward.approach_dashes,threat_dashes=self.reward.threat_dashes,
+                    dash_followup_hurts=self.reward.dash_followup_hurts)
         return self.observe(s,dt),reward,term,trunc,info
 
 def migrate(source,env):

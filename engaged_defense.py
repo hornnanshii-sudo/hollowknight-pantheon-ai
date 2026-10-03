@@ -7,9 +7,30 @@ class EngagedReward(Reward):
         super().__init__()
         self.disengaged_run=0.;self.corner_run=0.;self.corner_seconds=0.
         self.last_threat=-100.;self.disengaged_seconds=0.
+        self.dash_count=0;self.unnecessary_dashes=0;self.approach_dashes=0
+        self.threat_dashes=0;self.dash_followup_hurts=0;self.dash_followup_until=None
     def score(self,old,s,dt,hurt,action_mask=0):
         previous_avoidances=self.avoidances
         reward=super().score(old,s,dt,hurt,action_mask)
+        dash_started=bool(action_mask&16 and not (old['dashing'] or old['shadowDashing'])
+                          and (s['dashing'] or s['shadowDashing']))
+        dash_cost=0.
+        if dash_started:
+            self.dash_count+=1;self.dash_followup_until=old['time']+.5
+            def overlaps(h):
+                return abs(h['cx']-old['hero_cx'])<h['ex']+old['hero_ex'] and abs(h['cy']-old['hero_cy'])<h['ey']+old['hero_ey']
+            imminent=any(collision_time(old,h,.4) is not None or overlaps(h) for h in old['hazards'])
+            approaching=safe_gap(old)>5 and safe_gap(s)<safe_gap(old)-.2
+            if imminent:self.threat_dashes+=1
+            elif approaching:self.approach_dashes+=1
+            else:
+                self.unnecessary_dashes+=1
+                dash_cost=-.05 if s['shadowDashing'] else -.03
+        if self.dash_followup_until is not None:
+            if s['time']>self.dash_followup_until:self.dash_followup_until=None
+            elif hurt:
+                self.dash_followup_hurts+=1;self.dash_followup_until=None
+        self.breakdown['unnecessary_dash']=dash_cost
         threat=any(collision_time(s,h,.5) is not None for h in s['hazards'])
         if threat:self.last_threat=s['time']
         gap=safe_gap(s)
@@ -34,7 +55,7 @@ class EngagedReward(Reward):
             self.breakdown['avoidance']=0.;self.avoidances=previous_avoidances
         lost_survival=self.breakdown['survival'] if self.disengaged_run>2 or self.corner_run>2 else 0.
         self.breakdown['survival']-=lost_survival
-        return reward+far_cost+corner_cost-removed-lost_survival
+        return reward+far_cost+corner_cost-removed-lost_survival+dash_cost
     @property
     def qualified_engagement(self):
         return self.near_fraction>=.35 and self.disengaged_seconds/max(self.elapsed,1e-6)<=.2 and self.corner_seconds/max(self.elapsed,1e-6)<=.05
