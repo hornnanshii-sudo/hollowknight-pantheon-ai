@@ -7,6 +7,7 @@ from stable_baselines3 import PPO
 from stable_baselines3.common.monitor import Monitor
 from defense_v3_train import DefenseEnv, Progress, CONFIG
 from defense_v3_core import Reward
+from engaged_defense import EngagedReward
 from single_boss_core import ACTIONS,OBS_SIZE,FRAME_SIZE,SCHEMA,TASKS,allowed,CurriculumFeatures,CurriculumPolicy
 from dodge_reward import outside_view
 from train import ROOT,ensure_game
@@ -34,6 +35,7 @@ class SingleBossEnv(DefenseEnv):
         if self.active_task=='heal':
             self.state=self.bridge.request('training resources 6 99')
         self.start_hp=self.state['hp'];self.loss=0
+        self.reward=EngagedReward()
         self.hits_start=self.state['effective_hits'];self.damage_start=self.state['damage_dealt']
         self.focus_attempts=0;self.unsafe_focus=0;self.heals=0
         self.dive_attempts=0;self.dive_effective=0;self.pending_focus=None;self.pending_dive=None
@@ -52,9 +54,11 @@ class SingleBossEnv(DefenseEnv):
         hurt=max(0,old['hp']-s['hp']);healed=max(0,s['hp']-old['hp']);self.loss+=hurt;self.heals+=healed
         elapsed=s['time']-self.started;outside=outside_view(s);dead=s['hp']<=0
         won=bool(s['won'])
-        success=(elapsed>=120 and not dead and not outside) if self.active_task=='defense' else won and not dead and not outside
+        survived=bool(elapsed>=120 and not dead and not outside)
+        success=(survived and self.reward.qualified_engagement) if self.active_task=='defense' else won and not dead and not outside
         term=bool(dead or outside or won or elapsed>=120);trunc=bool(not term and time.monotonic()-self.wall_start>=600)
         reward=self.reward.score(old,s,min(dt,max(0,120-(old['time']-self.started))),hurt,mask)
+        if self.active_task=='defense':success=survived and self.reward.qualified_engagement
         reward+=self.reward.terminal(success,s['hp'],self.loss,term)
         damage=max(0,s['damage_dealt']-old['damage_dealt'])
         self.reward.breakdown['boss_damage']=.02*damage if self.active_task!='defense' else 0.
@@ -86,6 +90,8 @@ class SingleBossEnv(DefenseEnv):
                   reward_parts=self.reward_totals.copy(),dt_mean=self.dt_sum/self.steps,dt_min=self.dt_min,dt_max=self.dt_max,
                   request_seconds=latency,initial_offset=self.offset,healing_completed=self.heals,
                   focus_attempts=self.focus_attempts,unsafe_focus=self.unsafe_focus,dive_attempts=self.dive_attempts,dive_effective=self.dive_effective)
+        info.update(survived_120s=survived,disengaged_seconds=self.reward.disengaged_seconds,
+                    corner_seconds=self.reward.corner_seconds,qualified_engagement=self.reward.qualified_engagement)
         return self.observe(s,dt),reward,term,trunc,info
 
 def migrate(source,env):

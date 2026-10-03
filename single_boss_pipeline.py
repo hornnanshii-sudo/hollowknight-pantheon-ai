@@ -26,6 +26,8 @@ def summary(es):
     attempts=sum(e['focus_attempts'] for e in es)
     r['unsafe_focus_fraction']=sum(e['unsafe_focus'] for e in es)/max(attempts,1)
     r['healing_completed']=sum(e['healing_completed'] for e in es)/len(es)
+    for key in ('corner_seconds','disengaged_seconds','survived_120s'):
+        r[key]=sum(e.get(key,0) for e in es)/len(es)
     return r
 
 def progression(task,spent,passed,streak):
@@ -39,6 +41,10 @@ def main():
     if a.resume:
         state=json.loads((OUT/'status.json').read_text())
         if state['phase']=='complete':raise RuntimeError('Completed budget cannot restart')
+        # Reward revisions may intentionally skip an interrupted diagnostic
+        # evaluation and resume learning at the next authorized 10k boundary.
+        if state.pop('resume_training_next_check',False):
+            state['next_check']=min(100000,(state['steps']//10000+1)*10000)
         # Recover from the most recent saved weights, never replay an entire block.
         candidate=Path(state.get('training_checkpoint',state['checkpoint']))
         if candidate.exists() and steps(candidate)>state['steps']:
