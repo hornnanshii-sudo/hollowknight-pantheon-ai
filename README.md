@@ -2,7 +2,19 @@
 
 目标：训练 AI 在正常游戏规则下完成无束缚五门（Pantheon of Hallownest）。
 
-当前状态：项目规划与配置骨架。尚未实现游戏 Mod、训练环境或可运行的 PPO 训练器，也没有通关模型。
+当前状态：已实现 Unity 6/BepInEx 游戏接口和格鲁兹之母 PPO 基线，正在真实游戏中验证训练。尚未宣称稳定击败 Boss 或通关五门。
+
+## 格鲁兹之母实验
+
+当前版本使用 BepInEx 5.4.23.4、独立第 4 存档槽和本地 TCP 9851。首次安装前备份存档；只有槽位 4 为空时才能从自己的神居存档复制。**训练插件安装期间会阻止 GameManager.SaveGame；恢复个人正常游玩前应关闭游戏并移走 `BepInEx/plugins/PantheonTraining.dll`。**
+
+构建插件：`powershell -File scripts/build-mod.ps1`。训练：`.venv/Scripts/python.exe -u train.py --steps 20000`。程序自动启动游戏（若未运行）、载入槽位 4、进入挑战并反复重置。
+
+继续训练：`.venv/Scripts/python.exe -u train.py --checkpoint artifacts/gruz/latest.zip --steps 20000`。
+
+独立评测：`.venv/Scripts/python.exe -u train.py --checkpoint artifacts/gruz/latest.zip --eval 20`。
+
+动作基线是 12 种移动/跳跃/攻击组合；没有预编写战斗策略。每次动作等待 3 个物理更新，但游戏在网络传输和 PPO 更新期间仍继续运行，暂非严格锁步。当前仅验证普通格鲁兹之母场地，尚未覆盖五门场地或资源继承。日志和权重位于 `artifacts/gruz/`，不上传。
 
 ## 训练路线
 
