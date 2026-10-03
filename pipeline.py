@@ -5,6 +5,7 @@ import statistics
 import subprocess
 import sys
 import time
+import zipfile
 from pathlib import Path
 
 ROOT=Path(__file__).resolve().parent
@@ -26,15 +27,33 @@ def main():
     parser.add_argument("--skills",action="store_true")
     parser.add_argument("--steps",type=int,default=10000)
     parser.add_argument("--stages",type=int,default=3)
+    parser.add_argument("--initial-checkpoint",type=Path)
+    parser.add_argument("--wait-pid",type=int)
+    parser.add_argument("--total-steps",type=int)
+    parser.add_argument("--output-name")
     args=parser.parse_args()
-    OUT=ROOT/"artifacts"/("skills-pipeline" if args.skills else "pipeline")
+    if args.output_name and any(c not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_" for c in args.output_name):
+        parser.error("Invalid output name")
+    OUT=ROOT/"artifacts"/(args.output_name or ("skills-pipeline" if args.skills else "pipeline"))
     OUT.mkdir(parents=True,exist_ok=True)
     checkpoint=None if args.skills else ROOT/"artifacts/gruz-aggressive/latest.zip"
+    if args.initial_checkpoint:
+        checkpoint=args.initial_checkpoint
     extra=["--skills"] if args.skills else []
     reports=[]
     try:
+        if args.wait_pid:
+            status(phase="training",segment="existing first 100000 steps",target_steps=args.total_steps,completed=[])
+            subprocess.run(["powershell.exe","-NoProfile","-Command",f"if (Get-Process -Id {args.wait_pid} -ErrorAction SilentlyContinue) {{ Wait-Process -Id {args.wait_pid} }}"],check=True)
+        if args.total_steps:
+            with zipfile.ZipFile(checkpoint) as archive:
+                trained=json.loads(archive.read("data"))["num_timesteps"]
+            args.steps=args.total_steps-trained
+            if args.steps<=0 or (args.skills and args.steps%1000):
+                raise RuntimeError("Checkpoint does not permit exact requested total")
+            args.stages=1
         for stage in range(1,args.stages+1):
-            name=f"gruz-{'skills-' if args.skills else ''}stage-{stage}"
+            name=f"{args.output_name}-stage-{stage}" if args.output_name else f"gruz-{'skills-' if args.skills else ''}stage-{stage}"
             status(stage=stage,phase="training",steps_per_stage=args.steps,total_stages=args.stages,skills=args.skills,completed=reports)
             run(extra+(["--checkpoint",str(checkpoint)] if checkpoint else [])+["--steps",str(args.steps),"--run-name",name],OUT/f"stage-{stage}-train.log")
             checkpoint=ROOT/"artifacts"/name/"latest.zip"
