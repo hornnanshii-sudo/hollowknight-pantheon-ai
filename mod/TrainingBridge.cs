@@ -165,6 +165,12 @@ public class TrainingBridge : BaseUnityPlugin {
                 PlayerData.instance.infiniteAirJump=false;
             }
             else if(r.text=="mode combat") defenseOnly=false;
+            else if(r.text.StartsWith("training resources ")) {
+                string[] fields=r.text.Split(' ');
+                int hp=int.Parse(fields[2]),soul=int.Parse(fields[3]);
+                if(defenseOnly || !syncMode || advancing || hp<1 || hp>PlayerData.instance.maxHealth || soul<0 || soul>99)throw new InvalidOperationException("Invalid episode resource setup");
+                PlayerData.instance.health=hp;PlayerData.instance.MPCharge=soul;
+            }
             else if(r.text=="probe resources") {
                 if(defenseOnly)throw new InvalidOperationException("Diagnostics forbidden in defense training");
                 PlayerData.instance.health=Math.Max(1,PlayerData.instance.maxHealth-1);PlayerData.instance.MPCharge=99;
