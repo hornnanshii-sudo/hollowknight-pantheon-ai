@@ -185,7 +185,7 @@ def main():
     config = json.loads(config_path.read_text(encoding="utf-8"))
     ensure_game(Path(config["game_dir"]))
     env = Monitor(GruzEnv(aggressive=args.reward_style=="aggressive", skills=args.skills), str(OUTPUT / "monitor.csv"))
-    model = PPO.load(args.checkpoint, env=env, device="cpu") if args.checkpoint else PPO("MlpPolicy", env, device="cpu", n_steps=1024, batch_size=128, n_epochs=4, learning_rate=3e-4, gamma=0.995, ent_coef=0.01, policy_kwargs={"net_arch":dict(pi=[128,128], vf=[128,128])}, seed=42, verbose=1)
+    model = PPO.load(args.checkpoint, env=env, device="cpu") if args.checkpoint else PPO("MlpPolicy", env, device="cpu", n_steps=1000 if args.skills else 1024, batch_size=125 if args.skills else 128, n_epochs=4, learning_rate=3e-4, gamma=0.995, ent_coef=0.01, policy_kwargs={"net_arch":dict(pi=[128,128], vf=[128,128])}, seed=42, verbose=1)
     try:
         if args.eval:
             wins = 0
