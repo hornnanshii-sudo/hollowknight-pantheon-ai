@@ -23,7 +23,7 @@ public class TrainingBridge : BaseUnityPlugin {
     bool[] held = new bool[7], previous = new bool[7];
     HealthManager boss;
     int maxBossHp;
-    bool sawBoss, won, resetting;
+    bool sawBoss, won, resetting, displayChecked;
     float loadedAt;
     class Request { public string text, result; public ManualResetEvent done = new ManualResetEvent(false); }
     void Awake() {
@@ -31,7 +31,7 @@ public class TrainingBridge : BaseUnityPlugin {
         Application.runInBackground=true;
         Application.targetFrameRate=120;
         UnityEngine.SceneManagement.SceneManager.sceneLoaded += delegate(UnityEngine.SceneManagement.Scene s, LoadSceneMode mode) {
-            if(s.name=="GG_Gruz_Mother") { boss=null; maxBossHp=0; sawBoss=false; won=false; resetting=false; loadedAt=Time.time; }
+            if(s.name=="GG_Gruz_Mother") { boss=null; maxBossHp=0; sawBoss=false; won=false; resetting=false; displayChecked=false; loadedAt=Time.time; }
         };
         var harmony = new Harmony("local.pantheon.training");
         harmony.Patch(AccessTools.Method(typeof(HealthManager), "Die"), new HarmonyMethod(typeof(TrainingBridge), "BossDied"));
@@ -119,6 +119,21 @@ public class TrainingBridge : BaseUnityPlugin {
         var rb=hero!=null?hero.GetComponent<Rigidbody2D>():null; var br=boss!=null?boss.GetComponent<Rigidbody2D>():null;
         Vector2 v=rb!=null?rb.linearVelocity:Vector2.zero, bv=br!=null?br.linearVelocity:Vector2.zero;
         bool ready=!resetting && Time.time-loadedAt>2f && scene=="GG_Gruz_Mother" && hero!=null && boss!=null && sawBoss && !won && pd.health>0 && !hero.cState.transitioning;
+        // Direct arena entry can leave the normal transition fade covering the
+        // screen. Use the game's own fail-safe event, only after entry is ready.
+        if(ready && !displayChecked && GameCameras.instance!=null) {
+            var fade=AccessTools.Field(typeof(GameCameras),"cameraFadeFSM").GetValue(GameCameras.instance);
+            if(fade!=null) {
+                string fadeState=(string)AccessTools.Property(fade.GetType(),"ActiveStateName").GetValue(fade,null);
+                Logger.LogInfo("Arena display fade state: "+fadeState);
+                if(fadeState!="Normal") {
+                    var fsm=AccessTools.Property(fade.GetType(),"Fsm").GetValue(fade,null);
+                    AccessTools.Method(fsm.GetType(),"Event",new Type[]{typeof(string)}).Invoke(fsm,new object[]{"FADE SCENE IN"});
+                    Logger.LogInfo("Requested normal scene fade-in");
+                }
+                displayChecked=true;
+            }
+        }
         return string.Format(System.Globalization.CultureInfo.InvariantCulture,
             "{{\"scene\":\"{0}\",\"ready\":{1},\"won\":{2},\"hp\":{3},\"boss_hp\":{4},\"boss_max_hp\":{5},\"soul\":{6},\"x\":{7},\"y\":{8},\"vx\":{9},\"vy\":{10},\"bx\":{11},\"by\":{12},\"bvx\":{13},\"bvy\":{14},\"grounded\":{15},\"frame\":{16},\"time\":{17}}}",
             scene,ready.ToString().ToLower(),won.ToString().ToLower(),pd!=null?pd.health:0,boss!=null?boss.hp:0,maxBossHp,pd!=null?pd.MPCharge:0,p.x,p.y,v.x,v.y,b.x,b.y,bv.x,bv.y,hero!=null&&hero.cState.onGround?1:0,Time.frameCount,Time.time);
