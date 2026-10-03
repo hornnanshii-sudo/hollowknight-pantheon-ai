@@ -187,7 +187,20 @@ public class TrainingBridge : BaseUnityPlugin {
         string payload=string.Format(System.Globalization.CultureInfo.InvariantCulture,
             "{{\"scene\":\"{0}\",\"ready\":{1},\"won\":{2},\"hp\":{3},\"boss_hp\":{4},\"boss_max_hp\":{5},\"soul\":{6},\"x\":{7},\"y\":{8},\"vx\":{9},\"vy\":{10},\"bx\":{11},\"by\":{12},\"bvx\":{13},\"bvy\":{14},\"grounded\":{15},\"frame\":{16},\"time\":{17}}}",
             scene,ready.ToString().ToLower(),won.ToString().ToLower(),pd!=null?pd.health:0,boss!=null?boss.hp:0,maxBossHp,pd!=null?pd.MPCharge:0,p.x,p.y,v.x,v.y,b.x,b.y,bv.x,bv.y,hero!=null&&hero.cState.onGround?1:0,Time.frameCount,Time.time);
-        string skills=BoundsJson("hero_",hero!=null?hero.gameObject:null)+BoundsJson("boss_",boss!=null?boss.gameObject:null);
+        Camera camera=GameCameras.instance!=null?(Camera)AccessTools.Field(typeof(GameCameras),"mainCamera").GetValue(GameCameras.instance):Camera.main;
+        string view="";
+        if(camera!=null && hero!=null) {
+            var plane=new Plane(Vector3.forward,hero.transform.position);
+            Ray lower=camera.ViewportPointToRay(new Vector3(0,0,0)),upper=camera.ViewportPointToRay(new Vector3(1,1,0));
+            float d1,d2;
+            if(plane.Raycast(lower,out d1) && plane.Raycast(upper,out d2)) {
+                Vector3 v1=lower.GetPoint(d1),v2=upper.GetPoint(d2);
+                view=string.Format(System.Globalization.CultureInfo.InvariantCulture,
+                    ",\"view_left\":{0},\"view_right\":{1},\"view_bottom\":{2},\"view_top\":{3}",
+                    Math.Min(v1.x,v2.x),Math.Max(v1.x,v2.x),Math.Min(v1.y,v2.y),Math.Max(v1.y,v2.y));
+            }
+        }
+        string skills=view+BoundsJson("hero_",hero!=null?hero.gameObject:null)+BoundsJson("boss_",boss!=null?boss.gameObject:null);
         string phase="";
         if(boss!=null) foreach(var f in boss.GetComponents<PlayMakerFSM>())
             if(f.FsmName.IndexOf("Control",StringComparison.OrdinalIgnoreCase)>=0) { phase=f.ActiveStateName; break; }
