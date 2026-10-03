@@ -20,7 +20,7 @@ public class TrainingBridge : BaseUnityPlugin {
     float lastContact;
     Dictionary<OneAxisInputControl, int> inputs = new Dictionary<OneAxisInputControl, int>();
     static TrainingBridge self;
-    bool[] held = new bool[7], previous = new bool[7];
+    bool[] held = new bool[8], previous = new bool[8];
     HealthManager boss;
     int maxBossHp;
     int effectiveHits, damageDealt;
@@ -86,7 +86,7 @@ public class TrainingBridge : BaseUnityPlugin {
     void Update() {
         if(inputs.Count==0 && InputHandler.Instance!=null && InputHandler.Instance.inputActions!=null) {
             var a=InputHandler.Instance.inputActions;
-            OneAxisInputControl[] controls={a.left,a.right,a.jump,a.attack,a.dash,a.down,a.quickCast};
+            OneAxisInputControl[] controls={a.left,a.right,a.jump,a.attack,a.dash,a.down,a.quickCast,a.up};
             for(int i=0;i<controls.Length;i++) inputs[controls[i]]=i;
             Logger.LogInfo("Input bound");
         }
@@ -107,12 +107,19 @@ public class TrainingBridge : BaseUnityPlugin {
                 PlayerData.instance.bossStatueTargetLevel=0;
                 GameManager.instance.BeginSceneTransition(new GameManager.SceneLoadInfo { SceneName="GG_Gruz_Mother", EntryGateName="door_dreamEnter", EntryDelay=0f, Visualization=GameManager.SceneLoadVisualizations.GodsAndGlory });
             } else if(r.text.StartsWith("step ")) {
-                int mask=int.Parse(r.text.Substring(5)); for(int i=0;i<7;i++) held[i]=(mask&(1<<i))!=0;
+                int mask=int.Parse(r.text.Substring(5)); for(int i=0;i<held.Length;i++) held[i]=(mask&(1<<i))!=0;
             } else if(r.text=="release") Array.Clear(held,0,held.Length);
         } catch(Exception e) { r.result="{\"error\":\""+e.GetType().Name+"\"}"; }
         if(r.text.StartsWith("step ")) for(int i=0;i<3;i++) yield return new WaitForFixedUpdate();
         if(r.result==null) { try { r.result=State(); } catch(Exception e) { r.result="{\"error\":\""+e.GetType().Name+"\"}"; Logger.LogError(e); } }
         r.done.Set(); busy=false;
+    }
+    static string Numeric(object target, string name) {
+        if(target==null) return "0";
+        var f=AccessTools.Field(target.GetType(),name);
+        if(f==null) throw new MissingFieldException(target.GetType().Name,name);
+        object value=f.GetValue(target);
+        return value is bool ? ((bool)value?"1":"0") : Convert.ToString(value,System.Globalization.CultureInfo.InvariantCulture);
     }
     string State() {
         var hero=HeroController.instance; var pd=PlayerData.instance;
@@ -146,7 +153,14 @@ public class TrainingBridge : BaseUnityPlugin {
         string payload=string.Format(System.Globalization.CultureInfo.InvariantCulture,
             "{{\"scene\":\"{0}\",\"ready\":{1},\"won\":{2},\"hp\":{3},\"boss_hp\":{4},\"boss_max_hp\":{5},\"soul\":{6},\"x\":{7},\"y\":{8},\"vx\":{9},\"vy\":{10},\"bx\":{11},\"by\":{12},\"bvx\":{13},\"bvy\":{14},\"grounded\":{15},\"frame\":{16},\"time\":{17}}}",
             scene,ready.ToString().ToLower(),won.ToString().ToLower(),pd!=null?pd.health:0,boss!=null?boss.hp:0,maxBossHp,pd!=null?pd.MPCharge:0,p.x,p.y,v.x,v.y,b.x,b.y,bv.x,bv.y,hero!=null&&hero.cState.onGround?1:0,Time.frameCount,Time.time);
-        return payload.Substring(0,payload.Length-1)+",\"effective_hits\":"+effectiveHits+",\"damage_dealt\":"+damageDealt+"}";
+        string skills="";
+        foreach(string name in new string[]{"shadowDashTimer","dashCooldownTimer","attack_cooldown","nailChargeTimer","nailChargeTime"})
+            skills+=",\""+name+"\":"+Numeric(hero,name);
+        foreach(string name in new string[]{"invulnerable","shadowDashing","dashing","spellQuake"})
+            skills+=",\""+name+"\":"+Numeric(hero!=null?hero.cState:null,name);
+        foreach(string name in new string[]{"hasShadowDash","fireballLevel","quakeLevel","screamLevel","hasDashSlash","hasUpwardSlash","hasCyclone","equippedCharm_33"})
+            skills+=",\""+name+"\":"+Numeric(pd,name);
+        return payload.Substring(0,payload.Length-1)+skills+",\"effective_hits\":"+effectiveHits+",\"damage_dealt\":"+damageDealt+"}";
     }
     void OnDestroy() { Array.Clear(held,0,held.Length); if(listener!=null)listener.Stop(); }
 }

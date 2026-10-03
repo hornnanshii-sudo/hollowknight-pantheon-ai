@@ -12,6 +12,7 @@ from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.monitor import Monitor
 from combat_reward import CombatReward
+from skill_actions import SKILL_ACTIONS, skill_observation
 
 ROOT = Path(__file__).resolve().parent
 OUTPUT = ROOT / "artifacts" / "gruz"
@@ -55,12 +56,24 @@ def observation(s):
 
 
 class GruzEnv(gym.Env):
-    def __init__(self, aggressive=True):
+    def __init__(self, aggressive=True, skills=False):
         self.bridge = Bridge()
         self.aggressive = aggressive
-        self.action_space = gym.spaces.Discrete(len(ACTIONS))
-        self.observation_space = gym.spaces.Box(-np.inf, np.inf, (12,), np.float32)
+        self.skills = skills
+        self.history = []
+        self.action_space = gym.spaces.Discrete(len(SKILL_ACTIONS) if skills else len(ACTIONS))
+        self.observation_space = gym.spaces.Box(-np.inf, np.inf, (104 if skills else 12,), np.float32)
         self.state = None
+
+    def observe(self, s, reset=False):
+        if not self.skills:
+            return observation(s)
+        frame = skill_observation(s, observation(s))
+        if reset:
+            self.history = [frame.copy() for _ in range(4)]
+        else:
+            self.history = (self.history + [frame])[-4:]
+        return np.concatenate(self.history)
 
     def reset(self, *, seed=None, options=None):
         super().reset(seed=seed)
@@ -76,12 +89,18 @@ class GruzEnv(gym.Env):
                 self.damage_start = s.get("damage_dealt",0)
                 self.hp_lost = 0
                 self.reward_model = CombatReward(self.aggressive)
-                return observation(s), {}
+                return self.observe(s, reset=True), {}
             time.sleep(0.1)
         raise TimeoutError("Boss reset never became ready; inspect BepInEx log")
 
     def step(self, action):
-        s = self.bridge.request(f"step {ACTIONS[int(action)]}")
+        if self.skills:
+            name, mask, pulse = SKILL_ACTIONS[int(action)]
+            if pulse:
+                self.bridge.request(f"step {mask & ~pulse}")
+            s = self.bridge.request(f"step {mask}")
+        else:
+            s = self.bridge.request(f"step {ACTIONS[int(action)]}")
         old = self.state
         if s["scene"] != "GG_Gruz_Mother":
             raise RuntimeError(f"Unexpected scene during episode: {s['scene']}")
@@ -90,7 +109,7 @@ class GruzEnv(gym.Env):
         terminated = bool(s["won"] or s["hp"] <= 0)
         truncated = s["time"] - self.started >= 90 and not terminated
         self.state = s
-        return observation(s), reward, terminated, truncated, {"is_success": bool(s["won"]), "hp": s["hp"], "boss_hp": s["boss_hp"], "combo": self.reward_model.combo, "fight_seconds": s["time"]-self.started, "start_hp": self.start_hp, "hp_lost": self.hp_lost, "effective_hits": s.get("effective_hits",0)-self.hits_start, "damage_dealt": s.get("damage_dealt",0)-self.damage_start}
+        return self.observe(s), reward, terminated, truncated, {"is_success": bool(s["won"]), "hp": s["hp"], "boss_hp": s["boss_hp"], "combo": self.reward_model.combo, "fight_seconds": s["time"]-self.started, "start_hp": self.start_hp, "hp_lost": self.hp_lost, "effective_hits": s.get("effective_hits",0)-self.hits_start, "damage_dealt": s.get("damage_dealt",0)-self.damage_start}
 
     def close(self):
         self.bridge.close()
@@ -149,6 +168,7 @@ def ensure_game(game_dir):
 def main():
     global OUTPUT
     parser = argparse.ArgumentParser()
+    parser.add_argument("--skills", action="store_true", help="Expanded skills and four observation frames; requires updated bridge and new checkpoint")
     parser.add_argument("--steps", type=int, default=20000)
     parser.add_argument("--eval", type=int, default=0)
     parser.add_argument("--checkpoint", type=Path)
@@ -164,7 +184,7 @@ def main():
         config_path = ROOT / "config" / "local.example.json"
     config = json.loads(config_path.read_text(encoding="utf-8"))
     ensure_game(Path(config["game_dir"]))
-    env = Monitor(GruzEnv(aggressive=args.reward_style=="aggressive"), str(OUTPUT / "monitor.csv"))
+    env = Monitor(GruzEnv(aggressive=args.reward_style=="aggressive", skills=args.skills), str(OUTPUT / "monitor.csv"))
     model = PPO.load(args.checkpoint, env=env, device="cpu") if args.checkpoint else PPO("MlpPolicy", env, device="cpu", n_steps=1024, batch_size=128, n_epochs=4, learning_rate=3e-4, gamma=0.995, ent_coef=0.01, policy_kwargs={"net_arch":dict(pi=[128,128], vf=[128,128])}, seed=42, verbose=1)
     try:
         if args.eval:
