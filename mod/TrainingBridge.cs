@@ -119,7 +119,11 @@ public class TrainingBridge : BaseUnityPlugin {
             }
         }
         try {
-            if(r.text=="mode dodge") defenseOnly=true;
+            if(r.text=="mode dodge") {
+                defenseOnly=true;
+                Logger.LogInfo("Dodge mode infiniteAirJump before normalization: "+PlayerData.instance.infiniteAirJump);
+                PlayerData.instance.infiniteAirJump=false;
+            }
             else if(r.text=="mode combat") defenseOnly=false;
             else if(r.text.StartsWith("speed ")) {
                 float speed=float.Parse(r.text.Substring(6),System.Globalization.CultureInfo.InvariantCulture);
@@ -206,7 +210,7 @@ public class TrainingBridge : BaseUnityPlugin {
             if(f.FsmName.IndexOf("Control",StringComparison.OrdinalIgnoreCase)>=0) { phase=f.ActiveStateName; break; }
         skills+=",\"boss_phase\":\""+phase.Replace("\\","\\\\").Replace("\"","\\\"")+"\"";
         skills+=",\"facing_right\":"+Numeric(hero!=null?hero.cState:null,"facingRight");
-        foreach(string n in new string[]{"equippedCharm_35","equippedCharm_12","equippedCharm_10","equippedCharm_22","equippedCharm_40"})
+        foreach(string n in new string[]{"infiniteAirJump","equippedCharm_35","equippedCharm_12","equippedCharm_10","equippedCharm_22","equippedCharm_40"})
             skills+=",\""+n+"\":"+Numeric(pd,n);
         foreach(string name in new string[]{"shadowDashTimer","dashCooldownTimer","attack_cooldown","nailChargeTimer","nailChargeTime"})
             skills+=",\""+name+"\":"+Numeric(hero,name);
