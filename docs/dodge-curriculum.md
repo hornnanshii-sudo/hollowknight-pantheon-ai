@@ -26,3 +26,10 @@
 实际相机不是可依赖的Camera.main正交配置，改为读取GameCameras.mainCamera，并将视口射线投射到角色所在XY平面求可见矩形，支持透视配置。仍不是物理场地边界。
 
 实测两次离屏终局角色Y约30.7/31.7，相机上界约29，确认离屏而非用户错觉。游戏infiniteAirJump原始值为False，因此不能把异常高度归因于无限空跳；mode dodge将该调试标记固定为False（仅内存，存档禁写）。边界约束仍必要，正常跳跃/二段跳及输入节奏的具体贡献尚未逐帧验证。排查后从最新4000步checkpoint恢复，总目标仍100000步，首段补16000步。
+
+
+## 输入帧顺序核验
+
+旧pulse实现可能在HeroController.Update之后从协程改键，再由LateUpdate提前覆盖previous，松键/按下边沿可能丢失；pulseBits=0也会把新held复制到previous，导致首次长按缺少按下边沿。修正为TrainingBridge早于Hero执行Update，pulse松键在该阶段执行，按键排队到后续早期Update；previous仅在LateUpdate同步。不得把协程后的按键更改当作正常的一帧输入。
+
+添加jump_steps、doubleJump_steps、doubleJumped、wallSliding等诊断。修复后单次长按峰值Y20.98（起始15.40）、点跳22.50，均9血；跳冲21.83（受伤，非干净基线）。3次模型短回放峰值18.52/20.09/21.21，均因受伤提前结束，没有复现30+高度，但不能证明所有组合完全等价人工输入，也不能断言30+高度唯一由此缺陷导致。诊断数据留artifacts/jump-*.json。恢复最新5000步权重，仍累计100000步预算。

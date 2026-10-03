@@ -12,13 +12,15 @@ using UnityEngine;
 using UnityEngine.SceneManagement;
 using InControl;
 
+[DefaultExecutionOrder(-10000)]
 [BepInPlugin("local.pantheon.training", "Pantheon Training Bridge", "0.1.0")]
 public class TrainingBridge : BaseUnityPlugin {
     TcpListener listener;
     Queue<Request> requests = new Queue<Request>();
     bool busy;
     bool defenseOnly;
-    int deferPrevious;
+    bool queuedInput;
+    int queuedMask;
     float lastContact;
     Dictionary<OneAxisInputControl, int> inputs = new Dictionary<OneAxisInputControl, int>();
     static TrainingBridge self;
@@ -86,6 +88,10 @@ public class TrainingBridge : BaseUnityPlugin {
         }} catch(Exception e) { Logger.LogWarning(e.Message); }
     }
     void Update() {
+        if(queuedInput) {
+            for(int i=0;i<held.Length;i++) held[i]=(queuedMask&(1<<i))!=0;
+            queuedInput=false;
+        }
         if(inputs.Count==0 && InputHandler.Instance!=null && InputHandler.Instance.inputActions!=null) {
             var a=InputHandler.Instance.inputActions;
             OneAxisInputControl[] controls={a.left,a.right,a.jump,a.attack,a.dash,a.down,a.quickCast,a.up,a.focus};
@@ -97,7 +103,7 @@ public class TrainingBridge : BaseUnityPlugin {
             if(r!=null) { busy=true; lastContact=Time.realtimeSinceStartup; StartCoroutine(Execute(r)); }
         }
     }
-    void LateUpdate() { if(deferPrevious>0) deferPrevious--; else Array.Copy(held,previous,held.Length); }
+    void LateUpdate() { Array.Copy(held,previous,held.Length); }
     IEnumerator Execute(Request r) {
         bool stepping=r.text.StartsWith("step ") || r.text.StartsWith("pulse ");
         int pulseMask=0, pulseBits=0;
@@ -109,14 +115,14 @@ public class TrainingBridge : BaseUnityPlugin {
                 if(defenseOnly && (pulseMask & ~23)!=0) throw new ArgumentException();
                 for(int i=0;i<held.Length;i++) held[i]=((pulseMask & ~pulseBits)&(1<<i))!=0;
             } catch(Exception) { r.result="{\"error\":\"invalid pulse\"}"; }
-            // Keep release visible to a complete rendered input frame.
-            if(r.result==null && pulseBits!=0) yield return null;
-            if(r.result==null) {
-                Array.Copy(held,previous,held.Length);
-                for(int i=0;i<held.Length;i++) held[i]=(pulseMask&(1<<i))!=0;
-                // Coroutine resumes after Update: preserve the edge for the next Update.
-                deferPrevious=1;
+            if(r.result==null && pulseBits!=0) {
+                // Release was applied in early Update. Queue the press for a
+                // later early Update, never from the post-Update coroutine.
+                yield return null;
+                queuedMask=pulseMask;queuedInput=true;
+                while(queuedInput) yield return null;
             }
+
         }
         try {
             if(r.text=="mode dodge") {
@@ -212,9 +218,9 @@ public class TrainingBridge : BaseUnityPlugin {
         skills+=",\"facing_right\":"+Numeric(hero!=null?hero.cState:null,"facingRight");
         foreach(string n in new string[]{"infiniteAirJump","equippedCharm_35","equippedCharm_12","equippedCharm_10","equippedCharm_22","equippedCharm_40"})
             skills+=",\""+n+"\":"+Numeric(pd,n);
-        foreach(string name in new string[]{"shadowDashTimer","dashCooldownTimer","attack_cooldown","nailChargeTimer","nailChargeTime"})
+        foreach(string name in new string[]{"shadowDashTimer","dashCooldownTimer","attack_cooldown","nailChargeTimer","nailChargeTime","doubleJumped","jump_steps","doubleJump_steps","ledgeBufferSteps","touchingWallL","touchingWallR"})
             skills+=",\""+name+"\":"+Numeric(hero,name);
-        foreach(string name in new string[]{"invulnerable","shadowDashing","dashing","spellQuake"})
+        foreach(string name in new string[]{"invulnerable","shadowDashing","dashing","spellQuake","wallSliding","jumping","doubleJumping"})
             skills+=",\""+name+"\":"+Numeric(hero!=null?hero.cState:null,name);
         foreach(string name in new string[]{"hasShadowDash","fireballLevel","quakeLevel","screamLevel","hasDashSlash","hasUpwardSlash","hasCyclone","equippedCharm_33"})
             skills+=",\""+name+"\":"+Numeric(pd,name);
