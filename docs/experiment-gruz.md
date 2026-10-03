@@ -22,3 +22,6 @@
 完成 2048 步，约 134 秒采样/训练时间，约 15 步/秒，保存 `artifacts/gruz/latest.zip`。第一局死亡时 Boss 剩余 138 HP；第二局观测到 Boss HP 0，但死亡事件未可靠确认，记录为超时，不能据此宣称获胜。已添加 HealthManager.Die 事件监听修复，编译成功，但尚未获得修复后的评测结果。
 
 后续重启游戏时 Player.log 报告 `Steam failed to initialize`，游戏退出，训练连接断开。尝试 Steam 官方启动协议后仍未恢复。Windows 窗口工具又受 `setup refresh had errors` 阻断，无法确认是否有 Steam 登录窗口。继续实战需要先恢复可启动的 Steam 游戏会话。
+
+## 恢复后首个确认胜利
+用户从 Steam 成功启动游戏后，重启加载训练插件，通过 `steam.exe -applaunch 367520` 启动成功。从 2048 步 checkpoint 继续训练；累计 2546 步时一局 498 步、约 35 秒，Boss 死亡事件确认，玩家剩余 2 HP。保存 `artifacts/gruz/winner.zip`。这是随机采样训练中的一次成功，不是独立评测胜率，也不能证明 ToDesk 连接/断开全过程稳定。继续进行 4096 步短跑。
