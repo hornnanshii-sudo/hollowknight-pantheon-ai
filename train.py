@@ -71,6 +71,10 @@ class GruzEnv(gym.Env):
             if s["ready"]:
                 self.state = s
                 self.started = s["time"]
+                self.start_hp = s["hp"]
+                self.hits_start = s.get("effective_hits",0)
+                self.damage_start = s.get("damage_dealt",0)
+                self.hp_lost = 0
                 self.reward_model = CombatReward(self.aggressive)
                 return observation(s), {}
             time.sleep(0.1)
@@ -82,10 +86,11 @@ class GruzEnv(gym.Env):
         if s["scene"] != "GG_Gruz_Mother":
             raise RuntimeError(f"Unexpected scene during episode: {s['scene']}")
         reward = self.reward_model.score(old, s)
+        self.hp_lost += max(0, old["hp"]-s["hp"])
         terminated = bool(s["won"] or s["hp"] <= 0)
         truncated = s["time"] - self.started >= 90 and not terminated
         self.state = s
-        return observation(s), reward, terminated, truncated, {"is_success": bool(s["won"]), "hp": s["hp"], "boss_hp": s["boss_hp"], "combo": self.reward_model.combo, "fight_seconds": s["time"]-self.started}
+        return observation(s), reward, terminated, truncated, {"is_success": bool(s["won"]), "hp": s["hp"], "boss_hp": s["boss_hp"], "combo": self.reward_model.combo, "fight_seconds": s["time"]-self.started, "start_hp": self.start_hp, "hp_lost": self.hp_lost, "effective_hits": s.get("effective_hits",0)-self.hits_start, "damage_dealt": s.get("damage_dealt",0)-self.damage_start}
 
     def close(self):
         self.bridge.close()
@@ -164,6 +169,7 @@ def main():
     try:
         if args.eval:
             wins = 0
+            results = []
             for _ in range(args.eval):
                 obs, _ = env.reset()
                 done = False
@@ -172,6 +178,10 @@ def main():
                     obs, _, term, trunc, info = env.step(action)
                     done = term or trunc
                 wins += int(info["is_success"])
+                results.append({"episode":len(results)+1, **info})
+                print(json.dumps(results[-1]), flush=True)
+            report={"evaluation_episodes": args.eval, "wins": wins, "win_rate":wins/args.eval, "episodes":results}
+            (OUTPUT/"evaluation.json").write_text(json.dumps(report,indent=2),encoding="utf-8")
             print(json.dumps({"evaluation_episodes": args.eval, "wins": wins}), flush=True)
         else:
             model.learn(args.steps, callback=SaveProgress(), reset_num_timesteps=not bool(args.checkpoint))
