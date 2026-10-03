@@ -20,6 +20,7 @@ public class TrainingBridge : BaseUnityPlugin {
     bool busy;
     bool defenseOnly;
     bool syncMode, advancing;
+    float originalMaximumDeltaTime = -1f;
     int physicsTicks, inputMask;
     string lastBossPhase=""; float phaseSince; int phaseEvent;
     Dictionary<int,Vector2> hazardPositions=new Dictionary<int,Vector2>();
@@ -156,8 +157,8 @@ public class TrainingBridge : BaseUnityPlugin {
 
         }
         try {
-            if(r.text=="sync on") { syncMode=true;advancing=false;Time.timeScale=0f; }
-            else if(r.text=="sync off") { syncMode=false;advancing=false;Time.timeScale=1f; }
+            if(r.text=="sync on") { if(originalMaximumDeltaTime<0f) originalMaximumDeltaTime=Time.maximumDeltaTime; Time.maximumDeltaTime=Time.fixedDeltaTime; syncMode=true;advancing=false;Time.timeScale=0f; }
+            else if(r.text=="sync off") { if(originalMaximumDeltaTime>0f) { Time.maximumDeltaTime=originalMaximumDeltaTime;originalMaximumDeltaTime=-1f; } syncMode=false;advancing=false;Time.timeScale=1f; }
             else if(r.text=="mode dodge") {
                 defenseOnly=true;
                 Logger.LogInfo("Dodge mode infiniteAirJump before normalization: "+PlayerData.instance.infiniteAirJump);
@@ -184,7 +185,7 @@ public class TrainingBridge : BaseUnityPlugin {
                 GameManager.instance.BeginSceneTransition(new GameManager.SceneLoadInfo { SceneName="GG_Gruz_Mother", EntryGateName="door_dreamEnter", EntryDelay=0f, Visualization=GameManager.SceneLoadVisualizations.GodsAndGlory });
             } else if(r.text.StartsWith("step ")) {
                 int mask=int.Parse(r.text.Substring(5)); if(defenseOnly && (mask & ~23)!=0) throw new ArgumentException(); for(int i=0;i<held.Length;i++) held[i]=(mask&(1<<i))!=0;
-            } else if(r.text=="release") { Array.Clear(held,0,held.Length); Time.timeScale=1f; defenseOnly=false;syncMode=false;advancing=false; }
+            } else if(r.text=="release") { Array.Clear(held,0,held.Length); if(originalMaximumDeltaTime>0f) { Time.maximumDeltaTime=originalMaximumDeltaTime;originalMaximumDeltaTime=-1f; } Time.timeScale=1f; defenseOnly=false;syncMode=false;advancing=false; }
         } catch(Exception e) { r.result="{\"error\":\""+e.GetType().Name+"\"}"; }
         if(stepping && r.result==null) for(int i=0;i<3;i++) yield return new WaitForFixedUpdate();
         if(r.result==null) { try { r.result=State(); } catch(Exception e) { r.result="{\"error\":\""+e.GetType().Name+"\"}"; Logger.LogError(e); } }

@@ -1,5 +1,5 @@
 """Fresh 100k run: five 20k blocks, 30 independent 120s evaluations each."""
-import json, subprocess, sys, time
+import argparse, json, subprocess, sys, time, zipfile
 from pathlib import Path
 from defense_v2_pipeline import wilson
 ROOT=Path(__file__).resolve().parent
@@ -32,13 +32,19 @@ def summary(es):
     return r
 
 def main():
-    if (OUT/'status.json').exists():raise RuntimeError('Existing run: refuse duplicate budget')
-    reports=[];checkpoint=None;stage=1
+    parser=argparse.ArgumentParser();parser.add_argument('--resume-first-block',type=Path);a=parser.parse_args()
+    if (OUT/'status.json').exists() and not a.resume_first_block:raise RuntimeError('Existing run: refuse duplicate budget')
+    reports=[];checkpoint=a.resume_first_block;stage=1;resumed=0
+    if checkpoint:
+        previous=json.loads((OUT/'status.json').read_text())
+        resumed=json.loads(zipfile.ZipFile(checkpoint).read('data'))['num_timesteps']
+        if previous['phase']!='failed' or previous['stage']!=1 or previous['completed'] or not 0<resumed<20000:
+            raise RuntimeError('Unsupported recovery boundary')
     try:
         for stage in range(1,6):
             name=f'defense-v3-stage-{stage}'
             status(stage=stage,phase='training',completed=reports)
-            args=['--steps','20000','--horizon','120','--run-name',name]
+            args=['--steps',str(20000-resumed if stage==1 else 20000),'--horizon','120','--run-name',name]
             if checkpoint:args+=['--checkpoint',str(checkpoint)]
             run(args,OUT/f'stage-{stage}-train.log')
             checkpoint=ROOT/'artifacts'/name/'latest.zip'

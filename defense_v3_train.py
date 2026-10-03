@@ -73,7 +73,9 @@ def main():
     out=ROOT/'artifacts'/a.run_name;out.mkdir(parents=True,exist_ok=True)
     ensure_game(Path('D:/steam/steamapps/common/Hollow Knight'));env=Monitor(DefenseEnv(a.horizon),str(out/'monitor.csv'))
     (out/'config.json').write_text(json.dumps(dict(schema=SCHEMA,obs_size=OBS_SIZE,actions=ACTIONS,horizon=a.horizon,config=CONFIG),indent=2))
-    model=PPO.load(a.checkpoint,env=env,device='cpu') if a.checkpoint else PPO('MlpPolicy',env,device='cpu',**CONFIG)
+    # Resume after a partial rollout without rounding the authorized budget up.
+    rollout=max(n for n in range(1,1001) if a.steps%n==0) if not a.eval else 1000
+    model=PPO.load(a.checkpoint,env=env,device='cpu',custom_objects={'n_steps':rollout}) if a.checkpoint else PPO('MlpPolicy',env,device='cpu',**CONFIG)
     try:
         if a.eval:
             results=[]
