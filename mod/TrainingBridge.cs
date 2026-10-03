@@ -165,6 +165,41 @@ public class TrainingBridge : BaseUnityPlugin {
         return string.Format(System.Globalization.CultureInfo.InvariantCulture,
             ",\"{0}cx\":{1},\"{0}cy\":{2},\"{0}ex\":{3},\"{0}ey\":{4}",prefix,b.center.x,b.center.y,b.extents.x,b.extents.y);
     }
+    static string GeometryJson(HeroController hero) {
+        var ci=System.Globalization.CultureInfo.InvariantCulture;
+        var output=new System.Text.StringBuilder();
+        int layer=LayerMask.NameToLayer("Terrain");
+        output.Append(",\"terrain_valid\":"+(layer>=0?"true":"false")+",\"terrain_distances\":[");
+        Vector2 center=hero!=null?(Vector2)hero.GetComponent<Collider2D>().bounds.center:Vector2.zero;
+        Vector2 ext=hero!=null?(Vector2)hero.GetComponent<Collider2D>().bounds.extents:Vector2.zero;
+        Vector2[] dirs={Vector2.left,Vector2.right,Vector2.down,Vector2.up,new Vector2(-1,-1).normalized,new Vector2(1,-1).normalized,new Vector2(-1,1).normalized,new Vector2(1,1).normalized};
+        bool[] hits=new bool[8];
+        for(int i=0;i<8;i++) {
+            RaycastHit2D hit=layer>=0?Physics2D.Raycast(center,dirs[i],20f,1<<layer):new RaycastHit2D();
+            hits[i]=hit.collider!=null;
+            float distance=hits[i]?Math.Max(0,hit.distance-Math.Abs(dirs[i].x)*ext.x-Math.Abs(dirs[i].y)*ext.y):20f;
+            if(i>0)output.Append(",");output.Append(distance.ToString(ci));
+        }
+        output.Append("],\"terrain_hits\":[");
+        for(int i=0;i<8;i++){if(i>0)output.Append(",");output.Append(hits[i]?"1":"0");}
+        output.Append("],\"hazards\":[");
+        var colliders=new System.Collections.Generic.List<Collider2D>();
+        var sources=new System.Collections.Generic.Dictionary<Collider2D,DamageHero>();
+        foreach(var damage in UnityEngine.Object.FindObjectsOfType<DamageHero>()) {
+            if(!damage.enabled || !damage.gameObject.activeInHierarchy || damage.damageDealt<=0)continue;
+            foreach(var c in damage.GetComponents<Collider2D>()) {
+                if(c.enabled && c.gameObject.activeInHierarchy && !sources.ContainsKey(c)) {colliders.Add(c);sources[c]=damage;}
+            }
+        }
+        colliders.Sort((a,b)=>(((Vector2)a.bounds.center-center).sqrMagnitude).CompareTo(((Vector2)b.bounds.center-center).sqrMagnitude));
+        for(int i=0;i<Math.Min(6,colliders.Count);i++) {
+            var c=colliders[i];var d=sources[c];var b=c.bounds;var rb=c.attachedRigidbody;
+            Vector2 v=rb!=null?rb.linearVelocity:Vector2.zero;
+            if(i>0)output.Append(",");
+            output.Append(string.Format(ci,"{{\"cx\":{0},\"cy\":{1},\"ex\":{2},\"ey\":{3},\"vx\":{4},\"vy\":{5},\"damage\":{6},\"shadow_hazard\":{7}}}",b.center.x,b.center.y,b.extents.x,b.extents.y,v.x,v.y,d.damageDealt,d.shadowDashHazard?1:0));
+        }
+        output.Append("],\"hazard_count\":"+colliders.Count);return output.ToString();
+    }
     string State() {
         var hero=HeroController.instance; var pd=PlayerData.instance;
         string scene=UnityEngine.SceneManagement.SceneManager.GetActiveScene().name;
@@ -210,7 +245,7 @@ public class TrainingBridge : BaseUnityPlugin {
                     Math.Min(v1.x,v2.x),Math.Max(v1.x,v2.x),Math.Min(v1.y,v2.y),Math.Max(v1.y,v2.y));
             }
         }
-        string skills=view+BoundsJson("hero_",hero!=null?hero.gameObject:null)+BoundsJson("boss_",boss!=null?boss.gameObject:null);
+        string skills=GeometryJson(hero)+view+BoundsJson("hero_",hero!=null?hero.gameObject:null)+BoundsJson("boss_",boss!=null?boss.gameObject:null);
         string phase="";
         if(boss!=null) foreach(var f in boss.GetComponents<PlayMakerFSM>())
             if(f.FsmName.IndexOf("Control",StringComparison.OrdinalIgnoreCase)>=0) { phase=f.ActiveStateName; break; }

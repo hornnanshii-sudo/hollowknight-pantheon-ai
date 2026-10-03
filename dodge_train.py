@@ -10,6 +10,8 @@ from train import GruzEnv,ensure_game,observation,ROOT
 from dodge_reward import DodgeReward,outside_view
 from skill_actions import skill_observation
 
+from terrain_observation import geometry_observation,load_or_migrate
+
 DODGE_ACTIONS=[(move|keys,keys) for move in (0,1,2) for keys in (0,4,16,20)]
 
 def danger_observation(s):
@@ -19,14 +21,14 @@ def danger_observation(s):
     extra=[(s["boss_cx"]-s["hero_cx"])/30,(s["boss_cy"]-s["hero_cy"])/20,
            s["hero_ex"]/5,s["hero_ey"]/5,s["boss_ex"]/5,s["boss_ey"]/5,
            s["facing_right"],float(bool(s["boss_phase"]))]
-    return np.concatenate([skill_observation(s,observation(s)),np.asarray(extra,dtype=np.float32),phase])
+    return np.concatenate([skill_observation(s,observation(s)),np.asarray(extra,dtype=np.float32),phase,geometry_observation(s)])
 
 class DodgeEnv(GruzEnv):
     def __init__(self,horizon):
         super().__init__(skills=True)
         self.horizon=horizon
         self.action_space=gym.spaces.Discrete(len(DODGE_ACTIONS))
-        self.observation_space=gym.spaces.Box(-np.inf,np.inf,(200,),np.float32)
+        self.observation_space=gym.spaces.Box(-np.inf,np.inf,(496,),np.float32)
         self.bridge.request("mode dodge")
     def observe(self,s,reset=False):
         frame=danger_observation(s)
@@ -89,7 +91,7 @@ def main():
     out=ROOT/"artifacts"/a.run_name;out.mkdir(parents=True,exist_ok=True)
     ensure_game(Path("D:/steam/steamapps/common/Hollow Knight"))
     env=Monitor(DodgeEnv(120 if a.eval else a.horizon),str(out/"monitor.csv"))
-    model=PPO.load(a.checkpoint,env=env,device="cpu") if a.checkpoint else PPO("MlpPolicy",env,device="cpu",n_steps=1000,batch_size=125,n_epochs=4,gamma=.995,ent_coef=.02,learning_rate=3e-4,policy_kwargs={"net_arch":dict(pi=[128,128],vf=[128,128])},seed=42,verbose=1)
+    model=load_or_migrate(a.checkpoint,env) if a.checkpoint else PPO("MlpPolicy",env,device="cpu",n_steps=1000,batch_size=125,n_epochs=4,gamma=.995,ent_coef=.02,learning_rate=3e-4,policy_kwargs={"net_arch":dict(pi=[128,128],vf=[128,128])},seed=42,verbose=1)
     try:
         if a.eval:
             results=[]
