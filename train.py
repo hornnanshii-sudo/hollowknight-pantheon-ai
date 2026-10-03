@@ -11,6 +11,7 @@ import numpy as np
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.monitor import Monitor
+from combat_reward import CombatReward
 
 ROOT = Path(__file__).resolve().parent
 OUTPUT = ROOT / "artifacts" / "gruz"
@@ -54,8 +55,9 @@ def observation(s):
 
 
 class GruzEnv(gym.Env):
-    def __init__(self):
+    def __init__(self, aggressive=True):
         self.bridge = Bridge()
+        self.aggressive = aggressive
         self.action_space = gym.spaces.Discrete(len(ACTIONS))
         self.observation_space = gym.spaces.Box(-np.inf, np.inf, (12,), np.float32)
         self.state = None
@@ -69,6 +71,7 @@ class GruzEnv(gym.Env):
             if s["ready"]:
                 self.state = s
                 self.started = s["time"]
+                self.reward_model = CombatReward(self.aggressive)
                 return observation(s), {}
             time.sleep(0.1)
         raise TimeoutError("Boss reset never became ready; inspect BepInEx log")
@@ -78,17 +81,11 @@ class GruzEnv(gym.Env):
         old = self.state
         if s["scene"] != "GG_Gruz_Mother":
             raise RuntimeError(f"Unexpected scene during episode: {s['scene']}")
-        dealt = max(0, old["boss_hp"] - s["boss_hp"])
-        hurt = max(0, old["hp"] - s["hp"])
-        reward = 10 * dealt / max(old["boss_max_hp"], 1) - hurt * 0.5
+        reward = self.reward_model.score(old, s)
         terminated = bool(s["won"] or s["hp"] <= 0)
         truncated = s["time"] - self.started >= 90 and not terminated
-        if s["won"]:
-            reward += 5
-        elif s["hp"] <= 0:
-            reward -= 3
         self.state = s
-        return observation(s), reward, terminated, truncated, {"is_success": bool(s["won"]), "hp": s["hp"], "boss_hp": s["boss_hp"]}
+        return observation(s), reward, terminated, truncated, {"is_success": bool(s["won"]), "hp": s["hp"], "boss_hp": s["boss_hp"], "combo": self.reward_model.combo, "fight_seconds": s["time"]-self.started}
 
     def close(self):
         self.bridge.close()
@@ -98,7 +95,7 @@ class SaveProgress(BaseCallback):
     def _on_step(self):
         for info in self.locals["infos"]:
             if "episode" in info:
-                record = {"steps": self.num_timesteps, **info["episode"], "won": info["is_success"], "hp": info["hp"], "boss_hp": info["boss_hp"]}
+                record = {"steps": self.num_timesteps, **info["episode"], "won": info["is_success"], "hp": info["hp"], "boss_hp": info["boss_hp"], "fight_seconds": info["fight_seconds"], "combo": info["combo"]}
                 with (OUTPUT / "episodes.jsonl").open("a", encoding="utf-8") as file:
                     file.write(json.dumps(record) + "\n")
                 print(record, flush=True)
@@ -145,18 +142,24 @@ def ensure_game(game_dir):
 
 
 def main():
+    global OUTPUT
     parser = argparse.ArgumentParser()
     parser.add_argument("--steps", type=int, default=20000)
     parser.add_argument("--eval", type=int, default=0)
     parser.add_argument("--checkpoint", type=Path)
+    parser.add_argument("--reward-style", choices=["balanced", "aggressive"], default="aggressive")
+    parser.add_argument("--run-name", default="gruz-aggressive")
     args = parser.parse_args()
+    if not args.run_name or any(c not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_" for c in args.run_name):
+        parser.error("run-name must contain only letters, digits, hyphens and underscores")
+    OUTPUT = ROOT / "artifacts" / args.run_name
     OUTPUT.mkdir(parents=True, exist_ok=True)
     config_path = ROOT / "config" / "local.json"
     if not config_path.exists():
         config_path = ROOT / "config" / "local.example.json"
     config = json.loads(config_path.read_text(encoding="utf-8"))
     ensure_game(Path(config["game_dir"]))
-    env = Monitor(GruzEnv(), str(OUTPUT / "monitor.csv"))
+    env = Monitor(GruzEnv(aggressive=args.reward_style=="aggressive"), str(OUTPUT / "monitor.csv"))
     model = PPO.load(args.checkpoint, env=env, device="cpu") if args.checkpoint else PPO("MlpPolicy", env, device="cpu", n_steps=1024, batch_size=128, n_epochs=4, learning_rate=3e-4, gamma=0.995, ent_coef=0.01, policy_kwargs={"net_arch":dict(pi=[128,128], vf=[128,128])}, seed=42, verbose=1)
     try:
         if args.eval:
