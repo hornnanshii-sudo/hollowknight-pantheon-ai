@@ -56,10 +56,13 @@ def observation(s):
 
 
 class GruzEnv(gym.Env):
-    def __init__(self, aggressive=True, skills=False):
+    def __init__(self, aggressive=True, skills=False, flawless=False, time_scale=1):
         self.bridge = Bridge()
+        self.time_scale = time_scale
+        self.bridge.request(f"speed {time_scale}")
         self.aggressive = aggressive
         self.skills = skills
+        self.flawless = flawless
         self.history = []
         self.action_space = gym.spaces.Discrete(len(SKILL_ACTIONS) if skills else len(ACTIONS))
         self.observation_space = gym.spaces.Box(-np.inf, np.inf, (104 if skills else 12,), np.float32)
@@ -82,13 +85,14 @@ class GruzEnv(gym.Env):
         while time.monotonic() < deadline:
             s = self.bridge.request("state")
             if s["ready"]:
+                self.bridge.request(f"speed {self.time_scale}")
                 self.state = s
                 self.started = s["time"]
                 self.start_hp = s["hp"]
                 self.hits_start = s.get("effective_hits",0)
                 self.damage_start = s.get("damage_dealt",0)
                 self.hp_lost = 0
-                self.reward_model = CombatReward(self.aggressive)
+                self.reward_model = CombatReward(self.aggressive, flawless=self.flawless, max_health=s["hp"])
                 return self.observe(s, reset=True), {}
             time.sleep(0.1)
         raise TimeoutError("Boss reset never became ready; inspect BepInEx log")
@@ -96,9 +100,7 @@ class GruzEnv(gym.Env):
     def step(self, action):
         if self.skills:
             name, mask, pulse = SKILL_ACTIONS[int(action)]
-            if pulse:
-                self.bridge.request(f"step {mask & ~pulse}")
-            s = self.bridge.request(f"step {mask}")
+            s = self.bridge.request(f"pulse {mask} {pulse}")
         else:
             s = self.bridge.request(f"step {ACTIONS[int(action)]}")
         old = self.state
@@ -109,7 +111,7 @@ class GruzEnv(gym.Env):
         terminated = bool(s["won"] or s["hp"] <= 0)
         truncated = s["time"] - self.started >= 90 and not terminated
         self.state = s
-        return self.observe(s), reward, terminated, truncated, {"is_success": bool(s["won"]), "hp": s["hp"], "boss_hp": s["boss_hp"], "combo": self.reward_model.combo, "fight_seconds": s["time"]-self.started, "start_hp": self.start_hp, "hp_lost": self.hp_lost, "effective_hits": s.get("effective_hits",0)-self.hits_start, "damage_dealt": s.get("damage_dealt",0)-self.damage_start}
+        return self.observe(s), reward, terminated, truncated, {"is_success": bool(s["won"] and s["hp"]>0), "hp": s["hp"], "boss_hp": s["boss_hp"], "combo": self.reward_model.combo, "fight_seconds": s["time"]-self.started, "start_hp": self.start_hp, "hp_lost": self.hp_lost, "effective_hits": s.get("effective_hits",0)-self.hits_start, "damage_dealt": s.get("damage_dealt",0)-self.damage_start, "no_damage_win": bool(s["won"] and s["hp"]>0 and self.hp_lost==0), "end_soul": s["soul"]}
 
     def close(self):
         self.bridge.close()
@@ -119,7 +121,7 @@ class SaveProgress(BaseCallback):
     def _on_step(self):
         for info in self.locals["infos"]:
             if "episode" in info:
-                record = {"steps": self.num_timesteps, **info["episode"], "won": info["is_success"], "hp": info["hp"], "boss_hp": info["boss_hp"], "fight_seconds": info["fight_seconds"], "combo": info["combo"]}
+                record = {"steps": self.num_timesteps, **info["episode"], "won": info["is_success"], "hp": info["hp"], "boss_hp": info["boss_hp"], "fight_seconds": info["fight_seconds"], "combo": info["combo"], "hp_lost": info["hp_lost"], "no_damage_win": info["no_damage_win"], "effective_hits": info["effective_hits"], "damage_dealt": info["damage_dealt"]}
                 with (OUTPUT / "episodes.jsonl").open("a", encoding="utf-8") as file:
                     file.write(json.dumps(record) + "\n")
                 print(record, flush=True)
@@ -168,11 +170,12 @@ def ensure_game(game_dir):
 def main():
     global OUTPUT
     parser = argparse.ArgumentParser()
+    parser.add_argument("--time-scale",type=int,choices=[1,2],default=1)
     parser.add_argument("--skills", action="store_true", help="Expanded skills and four observation frames; requires updated bridge and new checkpoint")
     parser.add_argument("--steps", type=int, default=20000)
     parser.add_argument("--eval", type=int, default=0)
     parser.add_argument("--checkpoint", type=Path)
-    parser.add_argument("--reward-style", choices=["balanced", "aggressive"], default="aggressive")
+    parser.add_argument("--reward-style", choices=["balanced", "aggressive", "flawless"], default="aggressive")
     parser.add_argument("--run-name", default="gruz-aggressive")
     args = parser.parse_args()
     if not args.run_name or any(c not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_" for c in args.run_name):
@@ -184,7 +187,7 @@ def main():
         config_path = ROOT / "config" / "local.example.json"
     config = json.loads(config_path.read_text(encoding="utf-8"))
     ensure_game(Path(config["game_dir"]))
-    env = Monitor(GruzEnv(aggressive=args.reward_style=="aggressive", skills=args.skills), str(OUTPUT / "monitor.csv"))
+    env = Monitor(GruzEnv(aggressive=args.reward_style!="balanced", skills=args.skills, flawless=args.reward_style=="flawless", time_scale=1 if args.eval else args.time_scale), str(OUTPUT / "monitor.csv"))
     model = PPO.load(args.checkpoint, env=env, device="cpu") if args.checkpoint else PPO("MlpPolicy", env, device="cpu", n_steps=1000 if args.skills else 1024, batch_size=125 if args.skills else 128, n_epochs=4, learning_rate=3e-4, gamma=0.995, ent_coef=0.01, policy_kwargs={"net_arch":dict(pi=[128,128], vf=[128,128])}, seed=42, verbose=1)
     try:
         if args.eval:
@@ -198,7 +201,7 @@ def main():
                     obs, _, term, trunc, info = env.step(action)
                     done = term or trunc
                 wins += int(info["is_success"])
-                results.append({"episode":len(results)+1, **info})
+                results.append({**info, "episode_index":len(results)+1})
                 print(json.dumps(results[-1]), flush=True)
             report={"evaluation_episodes": args.eval, "wins": wins, "win_rate":wins/args.eval, "episodes":results}
             (OUTPUT/"evaluation.json").write_text(json.dumps(report,indent=2),encoding="utf-8")

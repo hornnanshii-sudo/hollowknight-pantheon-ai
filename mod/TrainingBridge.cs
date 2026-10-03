@@ -17,6 +17,7 @@ public class TrainingBridge : BaseUnityPlugin {
     TcpListener listener;
     Queue<Request> requests = new Queue<Request>();
     bool busy;
+    int deferPrevious;
     float lastContact;
     Dictionary<OneAxisInputControl, int> inputs = new Dictionary<OneAxisInputControl, int>();
     static TrainingBridge self;
@@ -95,10 +96,33 @@ public class TrainingBridge : BaseUnityPlugin {
             if(r!=null) { busy=true; lastContact=Time.realtimeSinceStartup; StartCoroutine(Execute(r)); }
         }
     }
-    void LateUpdate() { Array.Copy(held,previous,held.Length); }
+    void LateUpdate() { if(deferPrevious>0) deferPrevious--; else Array.Copy(held,previous,held.Length); }
     IEnumerator Execute(Request r) {
+        bool stepping=r.text.StartsWith("step ") || r.text.StartsWith("pulse ");
+        int pulseMask=0, pulseBits=0;
+        if(r.text.StartsWith("pulse ")) {
+            try {
+                string[] parts=r.text.Split(' ');
+                pulseMask=int.Parse(parts[1]); pulseBits=int.Parse(parts[2]);
+                if(pulseMask<0 || pulseMask>255 || pulseBits<0 || pulseBits>255) throw new ArgumentException();
+                for(int i=0;i<held.Length;i++) held[i]=((pulseMask & ~pulseBits)&(1<<i))!=0;
+            } catch(Exception) { r.result="{\"error\":\"invalid pulse\"}"; }
+            // Keep release visible to a complete rendered input frame.
+            if(r.result==null && pulseBits!=0) yield return null;
+            if(r.result==null) {
+                Array.Copy(held,previous,held.Length);
+                for(int i=0;i<held.Length;i++) held[i]=(pulseMask&(1<<i))!=0;
+                // Coroutine resumes after Update: preserve the edge for the next Update.
+                deferPrevious=1;
+            }
+        }
         try {
-            if(r.text=="load") GameManager.instance.LoadGameFromUI(4);
+            if(r.text.StartsWith("speed ")) {
+                float speed=float.Parse(r.text.Substring(6),System.Globalization.CultureInfo.InvariantCulture);
+                if(speed!=1f && speed!=2f) throw new ArgumentException();
+                Time.timeScale=speed;
+            }
+            else if(r.text=="load") GameManager.instance.LoadGameFromUI(4);
             else if(r.text=="reset") {
                 Array.Clear(held,0,held.Length); resetting=true; boss=null; maxBossHp=0; sawBoss=false; won=false;
                 BossSequenceController.Reset();
@@ -108,9 +132,9 @@ public class TrainingBridge : BaseUnityPlugin {
                 GameManager.instance.BeginSceneTransition(new GameManager.SceneLoadInfo { SceneName="GG_Gruz_Mother", EntryGateName="door_dreamEnter", EntryDelay=0f, Visualization=GameManager.SceneLoadVisualizations.GodsAndGlory });
             } else if(r.text.StartsWith("step ")) {
                 int mask=int.Parse(r.text.Substring(5)); for(int i=0;i<held.Length;i++) held[i]=(mask&(1<<i))!=0;
-            } else if(r.text=="release") Array.Clear(held,0,held.Length);
+            } else if(r.text=="release") { Array.Clear(held,0,held.Length); Time.timeScale=1f; }
         } catch(Exception e) { r.result="{\"error\":\""+e.GetType().Name+"\"}"; }
-        if(r.text.StartsWith("step ")) for(int i=0;i<3;i++) yield return new WaitForFixedUpdate();
+        if(stepping && r.result==null) for(int i=0;i<3;i++) yield return new WaitForFixedUpdate();
         if(r.result==null) { try { r.result=State(); } catch(Exception e) { r.result="{\"error\":\""+e.GetType().Name+"\"}"; Logger.LogError(e); } }
         r.done.Set(); busy=false;
     }

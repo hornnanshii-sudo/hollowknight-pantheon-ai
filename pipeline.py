@@ -24,7 +24,9 @@ def run(arguments, log):
 def main():
     global OUT
     parser=argparse.ArgumentParser()
+    parser.add_argument("--time-scale",type=int,choices=[1,2],default=1)
     parser.add_argument("--skills",action="store_true")
+    parser.add_argument("--reward-style",choices=["balanced","aggressive","flawless"],default="aggressive")
     parser.add_argument("--steps",type=int,default=10000)
     parser.add_argument("--stages",type=int,default=3)
     parser.add_argument("--initial-checkpoint",type=Path)
@@ -39,7 +41,7 @@ def main():
     checkpoint=None if args.skills else ROOT/"artifacts/gruz-aggressive/latest.zip"
     if args.initial_checkpoint:
         checkpoint=args.initial_checkpoint
-    extra=["--skills"] if args.skills else []
+    extra=(["--skills"] if args.skills else [])+["--reward-style",args.reward_style]
     reports=[]
     try:
         if args.wait_pid:
@@ -54,8 +56,8 @@ def main():
             args.stages=1
         for stage in range(1,args.stages+1):
             name=f"{args.output_name}-stage-{stage}" if args.output_name else f"gruz-{'skills-' if args.skills else ''}stage-{stage}"
-            status(stage=stage,phase="training",steps_per_stage=args.steps,total_stages=args.stages,skills=args.skills,completed=reports)
-            run(extra+(["--checkpoint",str(checkpoint)] if checkpoint else [])+["--steps",str(args.steps),"--run-name",name],OUT/f"stage-{stage}-train.log")
+            status(stage=stage,phase="training",steps_per_stage=args.steps,total_stages=args.stages,skills=args.skills,reward_style=args.reward_style,completed=reports)
+            run(extra+["--time-scale",str(args.time_scale)]+(["--checkpoint",str(checkpoint)] if checkpoint else [])+["--steps",str(args.steps),"--run-name",name],OUT/f"stage-{stage}-train.log")
             checkpoint=ROOT/"artifacts"/name/"latest.zip"
             status(stage=stage,phase="evaluation",completed=reports)
             run(extra+["--checkpoint",str(checkpoint),"--eval","20","--run-name",name+"-eval"],OUT/f"stage-{stage}-eval.log")
@@ -64,10 +66,16 @@ def main():
             report={"stage":stage,"win_rate":raw["win_rate"],"wins":raw["wins"],"episodes":20}
             for metric in ["start_hp","hp","hp_lost","effective_hits","damage_dealt","fight_seconds"]:
                 report["mean_"+metric]=statistics.mean(e[metric] for e in episodes)
+            report["no_damage_win_rate"]=sum(e.get("no_damage_win",False) for e in episodes)/len(episodes)
+            victorious=[e for e in episodes if e["is_success"]]
+            report["mean_win_hp"]=statistics.mean(e["hp"] for e in victorious) if victorious else None
+            report["mean_win_hp_lost"]=statistics.mean(e["hp_lost"] for e in victorious) if victorious else None
+            report["mean_end_soul"]=statistics.mean(e.get("end_soul",0) for e in episodes)
             victories=[e["fight_seconds"] for e in episodes if e["is_success"]]
             report["mean_win_seconds"]=statistics.mean(victories) if victories else None
             reports.append(report)
             text=f"# 第 {stage} 段真实游戏评测\n\n胜利：{raw['wins']}/20。\n\n|指标|均值|\n|---|---:|\n"
+            text += f"|no_damage_win_rate|{report['no_damage_win_rate']:.0%}|\n"
             text += "\n".join(f"|{k}|{v:.2f}|" for k,v in report.items() if k.startswith("mean_") and v is not None)
             text += "\n\n有效命中：Boss TakeDamage 实际扣血事件数，不是按键次数。时间为游戏内时间；均值包含失败局，获胜时间单列。20局不足以证明稳定胜率。"
             if len(reports)>1:
