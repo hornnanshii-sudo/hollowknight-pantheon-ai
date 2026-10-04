@@ -22,6 +22,8 @@ public class TrainingBridge : BaseUnityPlugin {
     bool syncMode, advancing;
     float originalMaximumDeltaTime = -1f;
     int physicsTicks, inputMask;
+    int tickTarget=-1, pulseStopTick=-1;
+    double physicsGameTime;
     string lastBossPhase=""; float phaseSince; int phaseEvent;
     Dictionary<int,Vector2> hazardPositions=new Dictionary<int,Vector2>();
     Dictionary<int,float> hazardTimes=new Dictionary<int,float>();
@@ -134,6 +136,12 @@ public class TrainingBridge : BaseUnityPlugin {
     }
     void FixedUpdate() {
         physicsTicks++;
+        physicsGameTime+=(double)Time.fixedDeltaTime;
+        // Stop at the physics boundary, not after a coroutine/render frame.
+        if(syncMode && advancing && tickTarget>=0) {
+            if(physicsTicks>=tickTarget){advancing=false;Time.timeScale=0f;}
+            else if(pulseStopTick>=0 && physicsTicks>=pulseStopTick){pulseStopTick=-1;Time.timeScale=0f;}
+        }
         var hero=HeroController.instance;
         if(hero==null || resetting)return;
         bool focusing=hero.cState.focusing,quaking=hero.cState.spellQuake;
@@ -146,6 +154,7 @@ public class TrainingBridge : BaseUnityPlugin {
         if(queuedInput) {
             for(int i=0;i<held.Length;i++) held[i]=(queuedMask&(1<<i))!=0;
             inputMask=queuedMask;queuedInput=false;
+            if(syncMode && advancing && tickTarget>=0)Time.timeScale=1f;
         }
         if(inputs.Count==0 && InputHandler.Instance!=null && InputHandler.Instance.inputActions!=null) {
             var a=InputHandler.Instance.inputActions;
@@ -171,8 +180,8 @@ public class TrainingBridge : BaseUnityPlugin {
             if(r.result==null) {
                 inputMask=mask & ~pulse;
                 for(int i=0;i<held.Length;i++)held[i]=(inputMask&(1<<i))!=0;
+                int start=physicsTicks;tickTarget=start+tickFrames;pulseStopTick=pulse!=0?start+1:-1;
                 advancing=true;Time.timeScale=1f;
-                int start=physicsTicks;
                 if(pulse!=0) {
                     while(physicsTicks<start+1)yield return new WaitForFixedUpdate();
                     queuedMask=mask;queuedInput=true;
@@ -180,7 +189,7 @@ public class TrainingBridge : BaseUnityPlugin {
                 }
                 else inputMask=mask;
                 while(physicsTicks<start+tickFrames)yield return new WaitForFixedUpdate();
-                advancing=false;Time.timeScale=0f;
+                advancing=false;Time.timeScale=0f;tickTarget=-1;pulseStopTick=-1;
                 try { r.result=State(); }catch(Exception e){r.result="{\"error\":\""+e.GetType().Name+"\"}";Logger.LogError(e);}
             }
             r.done.Set();busy=false;yield break;
@@ -205,8 +214,8 @@ public class TrainingBridge : BaseUnityPlugin {
 
         }
         try {
-            if(r.text=="sync on") { if(originalMaximumDeltaTime<0f) originalMaximumDeltaTime=Time.maximumDeltaTime; Time.maximumDeltaTime=Time.fixedDeltaTime; syncMode=true;advancing=false;Time.timeScale=0f; }
-            else if(r.text=="sync off") { if(originalMaximumDeltaTime>0f) { Time.maximumDeltaTime=originalMaximumDeltaTime;originalMaximumDeltaTime=-1f; } syncMode=false;advancing=false;Time.timeScale=1f; }
+            if(r.text=="sync on") { if(originalMaximumDeltaTime<0f) originalMaximumDeltaTime=Time.maximumDeltaTime; Time.maximumDeltaTime=Time.fixedDeltaTime; syncMode=true;advancing=false;tickTarget=-1;pulseStopTick=-1;Time.timeScale=0f; }
+            else if(r.text=="sync off") { if(originalMaximumDeltaTime>0f) { Time.maximumDeltaTime=originalMaximumDeltaTime;originalMaximumDeltaTime=-1f; } syncMode=false;advancing=false;tickTarget=-1;pulseStopTick=-1;Time.timeScale=1f; }
             else if(r.text=="mode dodge") {
                 defenseOnly=true;
                 Logger.LogInfo("Dodge mode infiniteAirJump before normalization: "+PlayerData.instance.infiniteAirJump);
@@ -233,7 +242,7 @@ public class TrainingBridge : BaseUnityPlugin {
                 nailHits=0;nailDamage=0;spellHits=0;spellDamage=0;quakeHits=0;quakeDamage=0;
                 heroDamageTaken=0;heroHealed=0;focusStarts=0;focusHeals=0;quakeCasts=0;wasFocusing=false;wasQuaking=false;focusStartedAt=0;
                 attackStarts=0;upAttacks=0;downAttacks=0;dashStarts=0;jumpStarts=0;wallJumpStarts=0;artHits=0;artDamage=0;fireballHits=0;fireballDamage=0;screamHits=0;screamDamage=0;lastAttackDirection="";lastDamageSource="";lastDamageType="";
-                Array.Clear(held,0,held.Length);inputMask=0;advancing=true;Time.timeScale=1f;hazardPositions.Clear();hazardTimes.Clear();lastBossPhase="";phaseEvent=0; resetting=true; boss=null; maxBossHp=0; sawBoss=false; won=false;
+                Array.Clear(held,0,held.Length);inputMask=0;tickTarget=-1;pulseStopTick=-1;advancing=true;Time.timeScale=1f;hazardPositions.Clear();hazardTimes.Clear();lastBossPhase="";phaseEvent=0; resetting=true; boss=null; maxBossHp=0; sawBoss=false; won=false;
                 BossSequenceController.Reset();
                 PlayerData.instance.currentBossSequence=null;
                 PlayerData.instance.health=PlayerData.instance.maxHealth;
@@ -242,7 +251,7 @@ public class TrainingBridge : BaseUnityPlugin {
                 GameManager.instance.BeginSceneTransition(new GameManager.SceneLoadInfo { SceneName="GG_Gruz_Mother", EntryGateName="door_dreamEnter", EntryDelay=0f, Visualization=GameManager.SceneLoadVisualizations.GodsAndGlory });
             } else if(r.text.StartsWith("step ")) {
                 int mask=int.Parse(r.text.Substring(5)); if(defenseOnly && (mask & ~23)!=0) throw new ArgumentException(); for(int i=0;i<held.Length;i++) held[i]=(mask&(1<<i))!=0;
-            } else if(r.text=="release") { Array.Clear(held,0,held.Length); if(originalMaximumDeltaTime>0f) { Time.maximumDeltaTime=originalMaximumDeltaTime;originalMaximumDeltaTime=-1f; } Time.timeScale=1f; defenseOnly=false;syncMode=false;advancing=false; }
+            } else if(r.text=="release") { Array.Clear(held,0,held.Length); if(originalMaximumDeltaTime>0f) { Time.maximumDeltaTime=originalMaximumDeltaTime;originalMaximumDeltaTime=-1f; } Time.timeScale=1f; defenseOnly=false;syncMode=false;advancing=false;tickTarget=-1;pulseStopTick=-1; }
         } catch(Exception e) { r.result="{\"error\":\""+e.GetType().Name+"\"}"; }
         if(stepping && r.result==null) for(int i=0;i<3;i++) yield return new WaitForFixedUpdate();
         if(r.result==null) { try { r.result=State(); } catch(Exception e) { r.result="{\"error\":\""+e.GetType().Name+"\"}"; Logger.LogError(e); } }
@@ -363,7 +372,7 @@ public class TrainingBridge : BaseUnityPlugin {
         }
         string payload=string.Format(System.Globalization.CultureInfo.InvariantCulture,
             "{{\"scene\":\"{0}\",\"ready\":{1},\"won\":{2},\"hp\":{3},\"boss_hp\":{4},\"boss_max_hp\":{5},\"soul\":{6},\"x\":{7},\"y\":{8},\"vx\":{9},\"vy\":{10},\"bx\":{11},\"by\":{12},\"bvx\":{13},\"bvy\":{14},\"grounded\":{15},\"frame\":{16},\"time\":{17}}}",
-            scene,ready.ToString().ToLower(),won.ToString().ToLower(),pd!=null?pd.health:0,boss!=null?boss.hp:0,maxBossHp,pd!=null?pd.MPCharge:0,p.x,p.y,v.x,v.y,b.x,b.y,bv.x,bv.y,hero!=null&&hero.cState.onGround?1:0,Time.frameCount,syncMode?Time.fixedTime:Time.time);
+            scene,ready.ToString().ToLower(),won.ToString().ToLower(),pd!=null?pd.health:0,boss!=null?boss.hp:0,maxBossHp,pd!=null?pd.MPCharge:0,p.x,p.y,v.x,v.y,b.x,b.y,bv.x,bv.y,hero!=null&&hero.cState.onGround?1:0,Time.frameCount,syncMode?physicsGameTime:(double)Time.time);
         Camera camera=GameCameras.instance!=null?(Camera)AccessTools.Field(typeof(GameCameras),"mainCamera").GetValue(GameCameras.instance):Camera.main;
         string view="";
         if(camera!=null && hero!=null) {
