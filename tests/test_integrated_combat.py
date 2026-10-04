@@ -28,8 +28,22 @@ class IntegratedRewardTests(unittest.TestCase):
         win=r.score(s,dict(s,boss_hp=0,damage_dealt=100),40,2)+r.terminal(True,7,2,True)
         r=CombatReward();camp=r.score(s,dict(s,time=120),120,0)+r.terminal(False,9,0,True,True)
         self.assertGreater(win,camp+10)
+    def test_ten_episode_gate_and_count_contract(self):
+        import integrated_combat_pipeline as pipeline
+        result=dict(episodes=10,out_of_view=0,watchdog_timeout=0,success_rate=.9,winning_hp_lost=2)
+        self.assertEqual(transition('basic',10000,result,0),(False,'continue',1))
+        self.assertEqual(transition('basic',20000,result,1),(True,'mastery',2))
+        result['episodes']=9
+        self.assertEqual(transition('basic',20000,result,1),(False,'continue',0))
+        with tempfile.TemporaryDirectory() as folder:
+            path=Path(folder)/'evaluation.json'
+            es=[dict(normal_start=True,start_hp=9,start_soul=0) for _ in range(10)]
+            path.write_text(json.dumps(dict(episodes=es)))
+            self.assertEqual(len(pipeline.normal_episodes(path,10)),10)
+            path.write_text(json.dumps(dict(episodes=es+[es[0]])))
+            with self.assertRaises(RuntimeError):pipeline.normal_episodes(path,10)
     def test_budget_forces_progression_without_mastery(self):
-        result=dict(episodes=30,out_of_view=0,watchdog_timeout=0,success_rate=0,winning_hp_lost=9)
+        result=dict(episodes=10,out_of_view=0,watchdog_timeout=0,success_rate=0,winning_hp_lost=9)
         self.assertEqual(transition('basic',100000,result,0),(True,'budget_unmastered',0))
         self.assertFalse(transition('full',300000,result,0)[0])
     def test_leaving_view_cannot_be_cheap_early_exit(self):
@@ -37,7 +51,7 @@ class IntegratedRewardTests(unittest.TestCase):
         self.assertLessEqual(value,-12)
     def test_whole_pipeline_reaches_300k_with_all_phases(self):
         import integrated_combat_pipeline as pipeline
-        result=dict(episodes=30,out_of_view=0,watchdog_timeout=0,success_rate=0,winning_hp_lost=9)
+        result=dict(episodes=10,out_of_view=0,watchdog_timeout=0,success_rate=0,winning_hp_lost=9)
         with tempfile.TemporaryDirectory() as folder:
             root=Path(folder)
             def fake_run(args,log):
@@ -53,6 +67,7 @@ class IntegratedRewardTests(unittest.TestCase):
             with patch.object(pipeline,'ROOT',root),patch.object(pipeline,'OUT',root/'pipeline'),patch.object(pipeline,'run',fake_run),patch.object(pipeline,'summary',lambda _:result),patch.object(sys,'argv',['pipeline']):
                 pipeline.main()
             state=json.loads((root/'pipeline/status.json').read_text())
+            self.assertEqual(state['eval_episodes'],10)
             self.assertEqual(state['steps'],300000)
             self.assertEqual(state['phase'],'complete')
             self.assertEqual(len(state['completed']),30)

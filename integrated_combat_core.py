@@ -4,7 +4,7 @@ from defense_v3_core import collision_time
 from dodge_reward import safe_gap,outside_view
 from single_boss_core import CurriculumFeatures
 
-REVISION='integrated-combat-v1'
+REVISION='integrated-combat-v2-inactivity'
 PHASES=('basic','mixed','full')
 TOTAL_STEPS=300000
 PHASE_CAPS={'basic':100000,'mixed':100000,'full':300000}
@@ -40,7 +40,7 @@ class CombatReward:
         ceiling=bool(hits[3] and distances[3]<1.2)
         self.corner_seconds+=dt if gap>5 and (wall and high or ceiling) else 0.
         if hurt and self.first_hurt is None:self.first_hurt=self.elapsed
-        started=bool(action_mask&16 and not(old['dashing'] or old['shadowDashing']) and (s['dashing'] or s['shadowDashing']))
+        started=s['dash_starts']>old['dash_starts'] if 'dash_starts' in s else bool(action_mask&16 and not(old['dashing'] or old['shadowDashing']) and (s['dashing'] or s['shadowDashing']))
         cost=0.
         if started:
             self.dash_count+=1;self.followup=old['time']+.5
@@ -71,7 +71,7 @@ class CombatReward:
         return self.breakdown['success']+self.breakdown['death']+self.breakdown['timeout']
 
 def transition(phase,spent,result,streak):
-    passed=result['episodes']>=30 and result['out_of_view']==0 and result['watchdog_timeout']==0 and result['success_rate']>=.9 and result['winning_hp_lost']<=2
+    passed=result['episodes']>=10 and result['out_of_view']==0 and result['watchdog_timeout']==0 and result['success_rate']>=.9 and result['winning_hp_lost']<=2
     streak=streak+1 if passed else 0
     advance=phase!='full' and (streak>=2 or spent>=PHASE_CAPS[phase])
     return advance,('mastery' if advance and streak>=2 else 'budget_unmastered' if advance else 'continue'),streak

@@ -39,6 +39,8 @@ public class TrainingBridge : BaseUnityPlugin {
     bool wasFocusing, wasQuaking;
     float focusStartedAt;
     string lastDamageSource="",lastDamageType="";
+    int attackStarts,upAttacks,downAttacks,dashStarts,jumpStarts,wallJumpStarts,artHits,artDamage,fireballHits,fireballDamage,screamHits,screamDamage;
+    string lastAttackDirection="";
     public struct DamageSnapshot { public int hp; public AttackTypes type; public string source; public bool quake; }
     bool sawBoss, won, resetting, displayChecked;
     float loadedAt;
@@ -55,6 +57,10 @@ public class TrainingBridge : BaseUnityPlugin {
         harmony.Patch(AccessTools.Method(typeof(HealthManager), "TakeDamage"), new HarmonyMethod(typeof(TrainingBridge), "BeforeDamage"), new HarmonyMethod(typeof(TrainingBridge), "AfterDamage"));
         harmony.Patch(AccessTools.Method(typeof(PlayerData), "AddHealth"),new HarmonyMethod(typeof(TrainingBridge),"BeforeHealth"),new HarmonyMethod(typeof(TrainingBridge),"AfterHeal"));
         harmony.Patch(AccessTools.Method(typeof(PlayerData), "TakeHealth"),new HarmonyMethod(typeof(TrainingBridge),"BeforeHealth"),new HarmonyMethod(typeof(TrainingBridge),"AfterHurt"));
+        harmony.Patch(AccessTools.Method(typeof(HeroController),"Attack"),null,new HarmonyMethod(typeof(TrainingBridge),"AfterAttack"));
+        harmony.Patch(AccessTools.Method(typeof(HeroController),"HeroDash"),null,new HarmonyMethod(typeof(TrainingBridge),"AfterDash"));
+        harmony.Patch(AccessTools.Method(typeof(HeroController),"HeroJump"),null,new HarmonyMethod(typeof(TrainingBridge),"AfterJump"));
+        harmony.Patch(AccessTools.Method(typeof(HeroController),"DoWallJump"),null,new HarmonyMethod(typeof(TrainingBridge),"AfterWallJump"));
         foreach (string name in new string[]{"IsPressed", "State", "WasPressed", "WasReleased", "Value", "RawValue"}) {
             var getter = AccessTools.PropertyGetter(typeof(OneAxisInputControl), name);
             if (getter != null) harmony.Patch(getter, new HarmonyMethod(typeof(TrainingBridge), name == "Value" || name == "RawValue" ? "FloatInput" : "BoolInput"));
@@ -68,9 +74,10 @@ public class TrainingBridge : BaseUnityPlugin {
     }
     static bool NoSave() { return false; }
     static void BeforeDamage(HealthManager __instance, HitInstance __0, out DamageSnapshot __state) {
-        string source=__0.Source!=null?__0.Source.name:"";
+        string source="";
+        if(__0.Source!=null){Transform node=__0.Source.transform;for(int depth=0;node!=null && depth<6;depth++,node=node.parent)source=node.name+(source.Length>0?"/"+source:"");}
         string lowered=source.ToLowerInvariant();
-        __state=new DamageSnapshot{hp=__instance.hp,type=__0.AttackType,source=source,quake=__0.AttackType==AttackTypes.Spell && (lowered.Contains("quake") || lowered.Contains("q mega") || lowered.Contains("q slash") || (HeroController.instance!=null && HeroController.instance.cState.spellQuake))};
+        __state=new DamageSnapshot{hp=__instance.hp,type=__0.AttackType,source=source,quake=__0.AttackType==AttackTypes.Spell && (lowered.Contains("quake") || lowered.Contains("q mega") || lowered.Contains("q slash") || lowered.Contains("q fall") || lowered.Contains("q2 ") || lowered.Contains("q1 "))};
     }
     static void AfterDamage(HealthManager __instance, DamageSnapshot __state) {
         if(self!=null && !self.resetting && self.boss==__instance && __instance.hp<__state.hp) {
@@ -80,9 +87,17 @@ public class TrainingBridge : BaseUnityPlugin {
             if(__state.type==AttackTypes.Nail || __state.type==AttackTypes.NailBeam){self.nailHits++;self.nailDamage+=damage;}
             if(__state.type==AttackTypes.Spell){self.spellHits++;self.spellDamage+=damage;}
             if(__state.quake){self.quakeHits++;self.quakeDamage+=damage;}
+            string source=__state.source.ToLowerInvariant();
+            if(source.Contains("great slash") || source.Contains("g slash") || source.Contains("dash slash") || source.Contains("cyclone")){self.artHits++;self.artDamage+=damage;}
+            if(__state.type==AttackTypes.Spell && source.Contains("fireball")){self.fireballHits++;self.fireballDamage+=damage;}
+            if(__state.type==AttackTypes.Spell && (source.Contains("scream") || source.Contains("scr heads"))){self.screamHits++;self.screamDamage+=damage;}
         }
     }
     static void BeforeHealth(PlayerData __instance,out int __state){__state=__instance.health;}
+    static void AfterAttack(GlobalEnums.AttackDirection __0){if(TrackingHealth()){self.attackStarts++;self.lastAttackDirection=__0.ToString();if(self.lastAttackDirection=="upward")self.upAttacks++;if(self.lastAttackDirection=="downward")self.downAttacks++;}}
+    static void AfterDash(){if(TrackingHealth())self.dashStarts++;}
+    static void AfterJump(){if(TrackingHealth())self.jumpStarts++;}
+    static void AfterWallJump(){if(TrackingHealth())self.wallJumpStarts++;}
     static bool TrackingHealth(){return self!=null && !self.resetting && self.sawBoss && UnityEngine.SceneManagement.SceneManager.GetActiveScene().name=="GG_Gruz_Mother";}
     static void AfterHurt(PlayerData __instance,int __state){if(TrackingHealth())self.heroDamageTaken+=Math.Max(0,__state-__instance.health);}
     static void AfterHeal(PlayerData __instance,int __state){
@@ -147,10 +162,11 @@ public class TrainingBridge : BaseUnityPlugin {
     void LateUpdate() { Array.Copy(held,previous,held.Length); }
     IEnumerator Execute(Request r) {
         if(r.text.StartsWith("tick ")) {
-            int mask=0,pulse=0;
+            int mask=0,pulse=0,tickFrames=4;
             try {
                 string[] a=r.text.Split(' ');mask=int.Parse(a[1]);pulse=int.Parse(a[2]);
-                if(!syncMode || mask<0 || mask>511 || pulse<0 || pulse>511 || (defenseOnly && (mask & ~23)!=0))throw new ArgumentException();
+                if(a.Length==4)tickFrames=int.Parse(a[3]);
+                if(a.Length<3 || a.Length>4 || (tickFrames!=2 && tickFrames!=4) || !syncMode || mask<0 || mask>511 || pulse<0 || pulse>511 || (pulse & ~mask)!=0 || (defenseOnly && (mask & ~23)!=0))throw new ArgumentException();
             } catch(Exception e) { r.result="{\"error\":\""+e.GetType().Name+"\"}"; }
             if(r.result==null) {
                 inputMask=mask & ~pulse;
@@ -163,7 +179,7 @@ public class TrainingBridge : BaseUnityPlugin {
                     while(queuedInput)yield return null;
                 }
                 else inputMask=mask;
-                while(physicsTicks<start+4)yield return new WaitForFixedUpdate();
+                while(physicsTicks<start+tickFrames)yield return new WaitForFixedUpdate();
                 advancing=false;Time.timeScale=0f;
                 try { r.result=State(); }catch(Exception e){r.result="{\"error\":\""+e.GetType().Name+"\"}";Logger.LogError(e);}
             }
@@ -216,6 +232,7 @@ public class TrainingBridge : BaseUnityPlugin {
             else if(r.text=="reset") {
                 nailHits=0;nailDamage=0;spellHits=0;spellDamage=0;quakeHits=0;quakeDamage=0;
                 heroDamageTaken=0;heroHealed=0;focusStarts=0;focusHeals=0;quakeCasts=0;wasFocusing=false;wasQuaking=false;focusStartedAt=0;
+                attackStarts=0;upAttacks=0;downAttacks=0;dashStarts=0;jumpStarts=0;wallJumpStarts=0;artHits=0;artDamage=0;fireballHits=0;fireballDamage=0;screamHits=0;screamDamage=0;lastAttackDirection="";lastDamageSource="";lastDamageType="";
                 Array.Clear(held,0,held.Length);inputMask=0;advancing=true;Time.timeScale=1f;hazardPositions.Clear();hazardTimes.Clear();lastBossPhase="";phaseEvent=0; resetting=true; boss=null; maxBossHp=0; sawBoss=false; won=false;
                 BossSequenceController.Reset();
                 PlayerData.instance.currentBossSequence=null;
@@ -237,6 +254,16 @@ public class TrainingBridge : BaseUnityPlugin {
         if(f==null) throw new MissingFieldException(target.GetType().Name,name);
         object value=f.GetValue(target);
         return value is bool ? ((bool)value?"1":"0") : Convert.ToString(value,System.Globalization.CultureInfo.InvariantCulture);
+    }
+    static bool PureAbility(HeroController hero,string method){return hero!=null && (bool)AccessTools.Method(typeof(HeroController),method).Invoke(hero,new object[0]);}
+    static bool GroundJumpAvailable(HeroController hero){
+        if(hero==null)return false;
+        var state=hero.cState;int actor=Convert.ToInt32(AccessTools.Field(typeof(HeroController),"hero_state").GetValue(hero));
+        if(actor==5 || actor==6 || actor==7 || state.wallSliding || state.dashing || state.backDashing || state.jumping || state.bouncing || state.shroomBouncing)return false;
+        if(state.onGround)return true;
+        // Read the coyote-time conditions without consuming ledgeBufferSteps.
+        return int.Parse(Numeric(hero,"ledgeBufferSteps"))>0 && !state.dead && !state.hazardDeath &&
+            Numeric(hero,"controlReqlinquished")=="0" && int.Parse(Numeric(hero,"headBumpSteps"))<=0 && !PureAbility(hero,"CheckNearRoof");
     }
     static string BoundsJson(string prefix, GameObject obj) {
         var c=obj!=null?obj.GetComponent<Collider2D>():null;
@@ -375,6 +402,18 @@ public class TrainingBridge : BaseUnityPlugin {
         skills+=",\"last_damage_type\":\""+lastDamageType+"\",\"last_damage_source\":\""+lastDamageSource.Replace("\\","\\\\").Replace("\"","\\\"")+"\"";
         foreach(string name in new string[]{"hasShadowDash","fireballLevel","quakeLevel","screamLevel","hasDashSlash","hasUpwardSlash","hasCyclone","equippedCharm_33"})
             skills+=",\""+name+"\":"+Numeric(pd,name);
+        foreach(string name in new string[]{"hasDash","hasDoubleJump","hasWalljump","hasNailArt"})skills+=",\""+name+"\":"+Numeric(pd,name);
+        skills+=",\"max_hp\":"+(pd!=null?pd.maxHealth:9)+",\"hero_nailCharging\":"+Numeric(hero!=null?hero.cState:null,"nailCharging")+",\"hero_recoiling\":"+Numeric(hero!=null?hero.cState:null,"recoiling")+",\"airDashed\":"+Numeric(hero,"airDashed");
+        skills+=",\"can_jump\":"+((GroundJumpAvailable(hero) || PureAbility(hero,"CanDoubleJump") || PureAbility(hero,"CanWallJump"))?1:0);
+        foreach(var item in new string[]{"dash:CanDash","attack:CanAttack","charge:CanNailCharge","cast:CanCast"}){var fields=item.Split(':');bool available=PureAbility(hero,fields[1]);if(fields[0]=="attack")available=available && float.Parse(Numeric(hero,"attack_cooldown"),System.Globalization.CultureInfo.InvariantCulture)<=0;skills+=",\"can_"+fields[0]+"\":"+(available?1:0);}
+        float charge=hero!=null?(float)AccessTools.Field(typeof(HeroController),"nailChargeTimer").GetValue(hero):0;
+        float chargeTime=hero!=null?(float)AccessTools.Field(typeof(HeroController),"nailChargeTime").GetValue(hero):1;
+        skills+=",\"charge_progress\":"+(charge/Math.Max(chargeTime,.01f)).ToString(System.Globalization.CultureInfo.InvariantCulture)+",\"charge_ready\":"+(charge>=chargeTime && chargeTime>0?1:0);
+        string artState="",spellState="";
+        if(hero!=null)foreach(var fsm in hero.GetComponents<PlayMakerFSM>()){if(fsm.FsmName=="Nail Arts")artState=fsm.ActiveStateName;if(fsm.FsmName=="Spell Control")spellState=fsm.ActiveStateName;}
+        skills+=",\"nail_art_state\":\""+artState.Replace("\"","\\\"")+"\",\"spell_control_state\":\""+spellState.Replace("\"","\\\"")+"\",\"hero_nailArt_active\":"+(hero!=null && hero.cState.freezeCharge && artState!="Idle" && artState!="Inactive"?1:0);
+        skills+=",\"attack_starts\":"+attackStarts+",\"up_attacks\":"+upAttacks+",\"down_attacks\":"+downAttacks+",\"dash_starts\":"+dashStarts+",\"jump_starts\":"+jumpStarts+",\"wall_jump_starts\":"+wallJumpStarts;
+        skills+=",\"art_hits\":"+artHits+",\"art_damage\":"+artDamage+",\"fireball_hits\":"+fireballHits+",\"fireball_damage\":"+fireballDamage+",\"scream_hits\":"+screamHits+",\"scream_damage\":"+screamDamage+",\"last_attack_direction\":\""+lastAttackDirection+"\"";
         return payload.Substring(0,payload.Length-1)+skills+",\"effective_hits\":"+effectiveHits+",\"damage_dealt\":"+damageDealt+"}";
     }
     void OnDestroy() { Array.Clear(held,0,held.Length); if(listener!=null)listener.Stop(); }

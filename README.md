@@ -6,7 +6,7 @@
 
 ## 当前运行入口
 
-当前使用六帧1320维结构化观测的综合战斗PPO，累计预算30万步，每1万步30局正常开局评测，单局最多120秒；基础→技能混合→巩固自动升级，技能专项与正常成绩分开。参数和执行契约见[综合战斗课程](docs/integrated-combat.md)。启动或恢复当前流程：`.venv/Scripts/python.exe -u integrated_combat_pipeline.py --resume`。状态位于`artifacts/integrated-combat-300k-pipeline/status.json`。该命令须先完成同目录新观测schema迁移；已有流程不允许重复从零覆盖。
+当前使用六帧1590维结构化观测的综合战斗PPO，累计预算30万步，每1万步10局正常开局评测，单局最多120秒；基础→技能混合→巩固自动升级，技能专项与正常成绩分开。参数和执行契约见[综合战斗课程](docs/integrated-combat.md)。启动或恢复当前流程：`.venv/Scripts/python.exe -u integrated_combat_pipeline.py --resume`。状态位于`artifacts/integrated-combat-300k-pipeline/status.json`。该命令须先完成同目录新观测schema迁移；已有流程不允许重复从零覆盖。
 
 下面的`train.py`和进攻奖励实验是历史基线，不是当前调度入口。
 
