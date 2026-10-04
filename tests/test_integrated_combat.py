@@ -42,11 +42,14 @@ class IntegratedRewardTests(unittest.TestCase):
             root=Path(folder)
             def fake_run(args,log):
                 name=args[args.index('--run-name')+1];out=root/'artifacts'/name;out.mkdir(parents=True,exist_ok=True)
-                if '--eval' in args:(out/'evaluation.json').write_text(json.dumps({'episodes':[]}))
+                if '--eval' in args:
+                    es=[{'assessment_success':False} for _ in range(10)] if '--assessment' in args else [dict(normal_start=True,start_hp=9,start_soul=0) for _ in range(int(args[args.index('--eval')+1]))]
+                    (out/'evaluation.json').write_text(json.dumps({'episodes':es}))
                 else:
                     count=pipeline.steps(Path(args[args.index('--checkpoint')+1])) if '--checkpoint' in args else 0
                     count+=int(args[args.index('--steps')+1])
                     with zipfile.ZipFile(out/'latest.zip','w') as z:z.writestr('data',json.dumps({'num_timesteps':count}))
+                    (out/'config.json').write_text('{}')
             with patch.object(pipeline,'ROOT',root),patch.object(pipeline,'OUT',root/'pipeline'),patch.object(pipeline,'run',fake_run),patch.object(pipeline,'summary',lambda _:result),patch.object(sys,'argv',['pipeline']):
                 pipeline.main()
             state=json.loads((root/'pipeline/status.json').read_text())

@@ -4,7 +4,13 @@
 
 当前状态：已实现 Unity 6/BepInEx 游戏接口和格鲁兹之母 PPO 基线，正在真实游戏中验证训练。尚未宣称稳定击败 Boss 或通关五门。
 
-## 格鲁兹之母实验
+## 当前运行入口
+
+当前使用六帧1320维结构化观测的综合战斗PPO，累计预算30万步，每1万步30局正常开局评测，单局最多120秒；基础→技能混合→巩固自动升级，技能专项与正常成绩分开。参数和执行契约见[综合战斗课程](docs/integrated-combat.md)。启动或恢复当前流程：`.venv/Scripts/python.exe -u integrated_combat_pipeline.py --resume`。状态位于`artifacts/integrated-combat-300k-pipeline/status.json`。该命令须先完成同目录新观测schema迁移；已有流程不允许重复从零覆盖。
+
+下面的`train.py`和进攻奖励实验是历史基线，不是当前调度入口。
+
+## 格鲁兹之母历史实验
 
 当前版本使用 BepInEx 5.4.23.4、独立第 4 存档槽和本地 TCP 9851。首次安装前备份存档；只有槽位 4 为空时才能从自己的神居存档复制。**训练插件安装期间会阻止 GameManager.SaveGame；恢复个人正常游玩前应关闭游戏并移走 `BepInEx/plugins/PantheonTraining.dll`。**
 
