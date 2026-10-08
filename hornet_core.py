@@ -3,6 +3,7 @@ import json
 import os
 import socket
 import time
+import atexit
 from pathlib import Path
 import numpy as np
 
@@ -19,10 +20,26 @@ def write_json(path,value):
         json.dump(value,f,ensure_ascii=False,indent=2);f.flush();os.fsync(f.fileno())
     os.replace(temp,path)
 
+_socket=None
+_reader=None
+def disconnect():
+    global _socket,_reader
+    if _reader is not None:_reader.close()
+    if _socket is not None:_socket.close()
+    _socket=_reader=None
+atexit.register(disconnect)
+
 def request(command):
-    with socket.create_connection(('127.0.0.1',9851),timeout=10) as sock:
-        sock.settimeout(35);sock.sendall((command+'\n').encode())
-        raw=sock.makefile('rb').readline()
+    global _socket,_reader
+    try:
+        if _socket is None:
+            _socket=socket.create_connection(('127.0.0.1',9851),timeout=10)
+            _socket.settimeout(35);_reader=_socket.makefile('rb')
+        _socket.sendall((command+'\n').encode())
+        raw=_reader.readline()
+    except Exception:
+        disconnect()
+        raise # Never replay an action with an unknown execution outcome.
     data=json.loads(raw)
     if 'error' in data:raise RuntimeError((command,data))
     return data

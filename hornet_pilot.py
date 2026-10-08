@@ -3,6 +3,7 @@ import json
 import os
 import random
 import traceback
+import argparse
 from pathlib import Path
 import numpy as np
 import torch
@@ -20,7 +21,7 @@ class PilotLedger(h.Ledger):
         super().__init__(path)
         self.start=self.data['actual']
     def reserve(self,training):
-        if training and self.data['actual']-self.start>=5000:raise RuntimeError('Pilot 5000 sample limit')
+        if training and self.data['actual']>=5000:raise RuntimeError('Pilot 5000 sample limit')
         super().reserve(training)
 
 def suspected_completion(s):
@@ -47,27 +48,46 @@ def save(model,ledger,label):
     h.write_json(OUT/'checkpoint.json',dict(directory=label,actual=ledger.data['actual'],effective=ledger.data['effective']))
 
 def main():
+    parser=argparse.ArgumentParser();parser.add_argument('--resume',action='store_true');args=parser.parse_args()
     OUT.mkdir(parents=True,exist_ok=True)
     # Durable one-shot claim; even a crashed pilot cannot silently start a second 5k.
-    with (OUT/'run-claim.json').open('x',encoding='utf8') as f:json.dump(dict(pid=os.getpid(),limit=5000),f)
+    if not args.resume:
+        with (OUT/'run-claim.json').open('x',encoding='utf8') as f:json.dump(dict(pid=os.getpid(),limit=5000),f)
+    elif json.loads((OUT/'status.json').read_text())['phase']!='needs_attention':
+        raise RuntimeError('Resume only allowed after explicit failed-run reconciliation')
     ledger=PilotLedger(TOTAL_LEDGER);env=None;model=None
     try:
-        if ledger.start!=0:raise RuntimeError('Pilot requires the existing Hornet total ledger to be unused')
+        if not args.resume and ledger.start!=0:raise RuntimeError('Pilot requires the existing Hornet total ledger to be unused')
         phase_names=json.loads((ROOT/'artifacts/hornet-v1/initial-state.json').read_text())['hornet']['phase_names']
         h.write_json(OUT/'manifest.json',dict(training='limited learnability pilot, not accepted full training',reward_version='hornet-pilot-damage1-hurt1-v1',coefficients=COEFF,damage_reward_per_hp=1/9,limit=5000,counts_toward_total=200000,baseline=None,terminal_rewards_enabled=False,full_acceptance_passed=False))
         env=PilotEnv(OUT,phase_names,COEFF,ledger)
         model=RecurrentPPO(Policy,env,n_steps=1000,batch_size=100,n_epochs=4,learning_rate=1e-4,gamma=.9975,gae_lambda=.95,ent_coef=.01,target_kl=.015,device='cpu',seed=42,verbose=1,policy_kwargs=dict(lstm_hidden_size=128,net_arch=dict(pi=[128],vf=[128])))
-        save(model,ledger,'checkpoint-0')
-        for batch in range(5):
+        if args.resume:
+            directory=OUT/json.loads((OUT/'checkpoint.json').read_text())['directory']
+            state=json.loads((directory/'state.json').read_text())
+            model=RecurrentPPO.load(directory/'model.zip',env=env,device='cpu')
+            rng=torch.load(directory/'rng.pt',weights_only=False)
+            torch.set_rng_state(rng['torch']);np.random.set_state(rng['numpy']);random.setstate(rng['python'])
+            ledger.data['effective']=state['effective']
+        else:save(model,ledger,'checkpoint-0')
+        while ledger.data['actual']<5000:
+            remaining=min(1000,5000-ledger.data['actual'])
+            if remaining!=model.n_steps:
+                from sb3_contrib.common.recurrent.buffers import RecurrentRolloutBuffer
+                model.n_steps=remaining
+                model.batch_size=remaining
+                if remaining<2:model.normalize_advantage=False
+                shape=(remaining,model.policy.lstm_actor.num_layers,model.n_envs,model.policy.lstm_actor.hidden_size)
+                model.rollout_buffer=RecurrentRolloutBuffer(remaining,env.observation_space,env.action_space,shape,device=model.device,gamma=model.gamma,gae_lambda=model.gae_lambda,n_envs=model.n_envs)
             h.write_json(OUT/'status.json',dict(phase='training',pilot_limit=5000,**ledger.data))
-            model.learn(total_timesteps=1000,reset_num_timesteps=False)
+            model.learn(total_timesteps=remaining,reset_num_timesteps=False)
             if not all(torch.isfinite(p).all() for p in model.policy.parameters()):raise RuntimeError('Nonfinite model parameters')
-            ledger.data['effective']+=1000;h.write_json(ledger.path,ledger.data)
+            ledger.data['effective']+=remaining;h.write_json(ledger.path,ledger.data)
             save(model,ledger,f'checkpoint-{ledger.data["actual"]}')
             metrics={k:float(v) for k,v in model.logger.name_to_value.items() if isinstance(v,(int,float,np.number))}
             with (OUT/'ppo-metrics.jsonl').open('a') as f:f.write(json.dumps(dict(actual=ledger.data['actual'],metrics=metrics))+'\n')
             print('COMPLETED_UPDATE',ledger.data['actual'],flush=True)
-        rows=env.rows
+        rows=[json.loads(line) for line in (OUT/'episodes.jsonl').read_text().splitlines()] if (OUT/'episodes.jsonl').exists() else []
         def stats(r):
             return dict(episodes=len(r),mean_damage=float(np.mean([x['damage'] for x in r])) if r else None,mean_hits=float(np.mean([x['hits'] for x in r])) if r else None,mean_hurt=float(np.mean([x['hurt'] for x in r])) if r else None,mean_seconds=float(np.mean([x['seconds'] for x in r])) if r else None)
         h.write_json(OUT/'report.json',dict(**ledger.data,all=stats(rows),early=stats(rows[:len(rows)//2]),late=stats(rows[len(rows)//2:]),limitations='Training-policy episodes only, no held-out evaluation; temporal differences do not establish improvement. Final partial episode excluded.',full_acceptance_passed=False))

@@ -2,6 +2,7 @@ import copy
 import json
 import tempfile
 import unittest
+from unittest.mock import patch, MagicMock
 from pathlib import Path
 import numpy as np
 import gymnasium as gym
@@ -11,6 +12,13 @@ from hornet_train import Policy, preflight
 from hornet_pilot import PilotLedger, suspected_completion
 
 class ContractTests(unittest.TestCase):
+    def test_transport_reuses_connection(self):
+        h.disconnect()
+        sock=MagicMock();sock.makefile.return_value.readline.return_value=b'{"ok": true}\n'
+        with patch.object(h.socket,'create_connection',return_value=sock) as connect:
+            self.assertTrue(h.request('state')['ok']);h.request('state')
+            self.assertEqual(connect.call_count,1);self.assertEqual(sock.sendall.call_count,2)
+        h.disconnect()
     def test_pilot_budget_uses_total_ledger(self):
         with tempfile.TemporaryDirectory() as d:
             p=Path(d)/'ledger.json';l=PilotLedger(p)
@@ -86,6 +94,12 @@ class ContractTests(unittest.TestCase):
                 return self.obs(),float(a[0]==2),self.i==7,False,{}
         model=RecurrentPPO(Policy,Fake(),n_steps=16,batch_size=8,n_epochs=1,device='cpu',policy_kwargs=dict(lstm_hidden_size=8,net_arch=dict(pi=[8],vf=[8])))
         model.learn(32)
+        from sb3_contrib.common.recurrent.buffers import RecurrentRolloutBuffer
+        model.n_steps=17
+        model.batch_size=17
+        model.rollout_buffer=RecurrentRolloutBuffer(17,model.observation_space,model.action_space,(17,1,1,8),device=model.device,gamma=model.gamma,gae_lambda=model.gae_lambda,n_envs=1)
+        model.learn(17,reset_num_timesteps=False)
+        self.assertEqual(model.num_timesteps,49)
         self.assertTrue(all(np.isfinite(p.detach().numpy()).all() for p in model.policy.parameters()))
 
 if __name__=='__main__':unittest.main()
