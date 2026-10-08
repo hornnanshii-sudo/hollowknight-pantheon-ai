@@ -10,8 +10,18 @@ from sb3_contrib import RecurrentPPO
 import hornet_core as h
 from hornet_train import Policy, preflight
 from hornet_pilot import PilotLedger, suspected_completion
+from hornet_long import LongLedger
 
 class ContractTests(unittest.TestCase):
+    def test_long_continuation_cannot_reset_total_budget(self):
+        with tempfile.TemporaryDirectory() as d:
+            p=Path(d)/'ledger.json';l=LongLedger(p)
+            l.data['actual']=199999;l.data['stage_actual'][0]=199999
+            l.reserve(True);l.settle()
+            self.assertEqual(h.Ledger(p).data['actual'],200000)
+            with self.assertRaises(RuntimeError):l.reserve(True)
+            l.reserve(False);l.settle()
+            self.assertEqual(l.data['actual'],200000)
     def test_transport_reuses_connection(self):
         h.disconnect()
         sock=MagicMock();sock.makefile.return_value.readline.return_value=b'{"ok": true}\n'
