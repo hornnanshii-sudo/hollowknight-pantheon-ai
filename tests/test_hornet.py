@@ -8,8 +8,22 @@ import gymnasium as gym
 from sb3_contrib import RecurrentPPO
 import hornet_core as h
 from hornet_train import Policy, preflight
+from hornet_pilot import PilotLedger, suspected_completion
 
 class ContractTests(unittest.TestCase):
+    def test_pilot_budget_uses_total_ledger(self):
+        with tempfile.TemporaryDirectory() as d:
+            p=Path(d)/'ledger.json';l=PilotLedger(p)
+            l.data['actual']=4999;l.data['stage_actual'][0]=4999
+            l.reserve(True);l.settle()
+            with self.assertRaises(RuntimeError):l.reserve(True)
+            self.assertEqual(h.Ledger(p).data['actual'],5000)
+
+    def test_pilot_stops_before_unverified_terminal_is_learned(self):
+        s=dict(scene='GG_Hornet_1',hornet=dict(valid=True,hp=9))
+        self.assertFalse(suspected_completion(s))
+        s['hornet']['native_death']=True
+        self.assertTrue(suspected_completion(s))
     def test_missing_acceptance_never_starts_training(self):
         with tempfile.TemporaryDirectory() as d:
             out=Path(d)
