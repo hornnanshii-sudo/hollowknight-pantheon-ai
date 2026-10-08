@@ -1,0 +1,70 @@
+import copy
+import json
+import tempfile
+import unittest
+from pathlib import Path
+import numpy as np
+import gymnasium as gym
+from sb3_contrib import RecurrentPPO
+import hornet_core as h
+from hornet_train import Policy
+
+class ContractTests(unittest.TestCase):
+    def test_corrupted_event_or_timing_is_rejected(self):
+        old=dict(scene='GG_Hornet_1',time=1.,physics_ticks=50,hp=9,hornet=dict(epoch=1,actor=2,damage=0,hurt=0,hits=0,attacks=0,hp=900,max_hp=900))
+        new=dict(scene='GG_Hornet_1',time=1.04,physics_ticks=52,hp=8,hazard_count=0,hero_healed=0,soul=11,hornet=dict(epoch=1,actor=2,damage=9,hurt=1,hits=1,attacks=1,hp=891,max_hp=900,valid=True,events=[dict(kind='damage',amount=9),dict(kind='hurt',amount=1)]))
+        h.validate(old,new)
+        bad=copy.deepcopy(new);bad['hornet']['events']=[]
+        with self.assertRaises(RuntimeError):h.validate(old,bad)
+        bad=copy.deepcopy(new);bad['physics_ticks']=53
+        with self.assertRaises(RuntimeError):h.validate(old,bad)
+
+    def test_budget_and_uncertain_execution(self):
+        with tempfile.TemporaryDirectory() as d:
+            p=Path(d)/'ledger.json';l=h.Ledger(p)
+            l.reserve(True)
+            with self.assertRaises(RuntimeError):h.Ledger(p)
+            l.settle();self.assertEqual(l.data['actual'],1)
+            l.reserve(False);l.settle();self.assertEqual(l.data['actual'],1)
+            self.assertEqual(l.data['evaluation'],1)
+            l.data['stage_actual'][0]=20000
+            with self.assertRaises(RuntimeError):l.reserve(True)
+
+    def test_action_semantics_and_native_masks(self):
+        s=dict(can_jump=1,can_dash=1,can_attack=1,input_mask=0)
+        self.assertEqual(h.buttons([1,1,3,0],s),(1|4|8|32,8))
+        self.assertEqual(h.buttons([2,0,2,1],s),(2|8|128|16,8|16))
+        s['can_attack']=0
+        with self.assertRaises(ValueError):h.buttons([0,0,1,0],s)
+        s['can_jump']=0;s['input_mask']=4
+        self.assertEqual(h.buttons([0,1,0,0],s),(4,0))
+
+    def test_victory_requires_native_completion(self):
+        s=dict(hp=1,hornet=dict(native_death=True,complete=False,bosses_dead=True))
+        self.assertFalse(h.won(s));s['hornet']['complete']=True
+        self.assertTrue(h.won(s));s['hp']=0;self.assertFalse(h.won(s))
+
+    def test_reward_keeps_simultaneous_events(self):
+        a=dict(hornet=dict(damage=0,hurt=0))
+        b=dict(hp=8,hornet=dict(damage=9,hurt=1,native_death=False,complete=False,bosses_dead=False))
+        parts=h.reward(a,b,dict(hurt=2))
+        self.assertEqual(parts,dict(damage=1,hurt=-2))
+
+    def test_recurrent_mask_survives_real_ppo_update(self):
+        class Fake(gym.Env):
+            action_space=gym.spaces.MultiDiscrete(h.HEADS)
+            observation_space=gym.spaces.Box(-5,5,(20,),dtype=np.float32)
+            def reset(self,seed=None,options=None):
+                super().reset(seed=seed);self.i=0
+                return self.obs(),{}
+            def obs(self):
+                v=np.zeros(20,np.float32);v[-11:]=[1,1,1,1,0,1,0,0,0,1,0];return v
+            def step(self,a):
+                assert a[1]==a[2]==a[3]==0, a
+                self.i+=1
+                return self.obs(),float(a[0]==2),self.i==7,False,{}
+        model=RecurrentPPO(Policy,Fake(),n_steps=16,batch_size=8,n_epochs=1,device='cpu',policy_kwargs=dict(lstm_hidden_size=8,net_arch=dict(pi=[8],vf=[8])))
+        model.learn(32)
+        self.assertTrue(all(np.isfinite(p.detach().numpy()).all() for p in model.policy.parameters()))
+
+if __name__=='__main__':unittest.main()

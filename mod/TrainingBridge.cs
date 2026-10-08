@@ -16,8 +16,13 @@ using InControl;
 [BepInPlugin("local.pantheon.training", "Pantheon Training Bridge", "0.1.0")]
 public class TrainingBridge : BaseUnityPlugin {
     TcpListener listener;
+    volatile bool serverRunning;
     Queue<Request> requests = new Queue<Request>();
     bool busy;
+    bool ownsInput;
+    bool mantisEntering;
+    float mantisLoadedAt;
+    Request activeRequest;
     bool defenseOnly;
     bool syncMode, advancing;
     float originalMaximumDeltaTime = -1f;
@@ -43,22 +48,28 @@ public class TrainingBridge : BaseUnityPlugin {
     string lastDamageSource="",lastDamageType="";
     int attackStarts,upAttacks,downAttacks,dashStarts,jumpStarts,wallJumpStarts,artHits,artDamage,fireballHits,fireballDamage,screamHits,screamDamage;
     string lastAttackDirection="";
-    public struct DamageSnapshot { public int hp; public AttackTypes type; public string source; public bool quake; }
+    public struct DamageSnapshot { public int hp; public AttackTypes type; public string source; public bool quake;public bool mantis; }
     bool sawBoss, won, resetting, displayChecked;
     float loadedAt;
     class Request { public string text, result; public ManualResetEvent done = new ManualResetEvent(false); }
     void Awake() {
         self = this;
+        gameObject.AddComponent<TrainingPauseGuard>();
         Application.runInBackground=true;
         Application.targetFrameRate=120;
         UnityEngine.SceneManagement.SceneManager.sceneLoaded += delegate(UnityEngine.SceneManagement.Scene s, LoadSceneMode mode) {
+            TrainingCurriculumProfile.SceneChanged();
+            if(s.name=="GG_Mantis_Lords_V" || s.name=="GG_False_Knight" || s.name=="GG_Hornet_1"){mantisEntering=true;mantisLoadedAt=Time.realtimeSinceStartup;}
             if(s.name=="GG_Gruz_Mother") { boss=null; maxBossHp=0; effectiveHits=0; damageDealt=0; sawBoss=false; won=false; resetting=false; displayChecked=false; loadedAt=Time.time; }
         };
         var harmony = new Harmony("local.pantheon.training");
+        FalseKnightAudit.Install(harmony);
+        HornetTelemetry.Install(harmony);
         harmony.Patch(AccessTools.Method(typeof(HealthManager), "Die"), new HarmonyMethod(typeof(TrainingBridge), "BossDied"));
         harmony.Patch(AccessTools.Method(typeof(HealthManager), "TakeDamage"), new HarmonyMethod(typeof(TrainingBridge), "BeforeDamage"), new HarmonyMethod(typeof(TrainingBridge), "AfterDamage"));
         harmony.Patch(AccessTools.Method(typeof(PlayerData), "AddHealth"),new HarmonyMethod(typeof(TrainingBridge),"BeforeHealth"),new HarmonyMethod(typeof(TrainingBridge),"AfterHeal"));
         harmony.Patch(AccessTools.Method(typeof(PlayerData), "TakeHealth"),new HarmonyMethod(typeof(TrainingBridge),"BeforeHealth"),new HarmonyMethod(typeof(TrainingBridge),"AfterHurt"));
+        harmony.Patch(AccessTools.Method(typeof(HeroController),"TakeDamage"),new HarmonyMethod(typeof(TrainingBridge),"BeforeHeroDamage"),new HarmonyMethod(typeof(TrainingBridge),"AfterHeroDamage"));
         harmony.Patch(AccessTools.Method(typeof(HeroController),"Attack"),null,new HarmonyMethod(typeof(TrainingBridge),"AfterAttack"));
         harmony.Patch(AccessTools.Method(typeof(HeroController),"HeroDash"),null,new HarmonyMethod(typeof(TrainingBridge),"AfterDash"));
         harmony.Patch(AccessTools.Method(typeof(HeroController),"HeroJump"),null,new HarmonyMethod(typeof(TrainingBridge),"AfterJump"));
@@ -71,17 +82,27 @@ public class TrainingBridge : BaseUnityPlugin {
         foreach (var method in typeof(GameManager).GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic))
             if (method.Name == "SaveGame") harmony.Patch(method, new HarmonyMethod(typeof(TrainingBridge), "NoSave"));
         listener = new TcpListener(IPAddress.Loopback, 9851); listener.Start();
+        serverRunning=true;
         new Thread(Serve){IsBackground=true}.Start();
         Logger.LogInfo("Training bridge listening on 127.0.0.1:9851; saving disabled while installed");
     }
     static bool NoSave() { return false; }
+    static void ConfigureMantis(BossSceneController controller) {
+        controller.BossLevel=1;
+        BossSceneController.SetupEvent-=ConfigureMantis;
+    }
+    static void ConfigureFalseKnight(BossSceneController controller) {
+        controller.BossLevel=0;
+        BossSceneController.SetupEvent-=ConfigureFalseKnight;
+    }
     static void BeforeDamage(HealthManager __instance, HitInstance __0, out DamageSnapshot __state) {
         string source="";
         if(__0.Source!=null){Transform node=__0.Source.transform;for(int depth=0;node!=null && depth<6;depth++,node=node.parent)source=node.name+(source.Length>0?"/"+source:"");}
         string lowered=source.ToLowerInvariant();
-        __state=new DamageSnapshot{hp=__instance.hp,type=__0.AttackType,source=source,quake=__0.AttackType==AttackTypes.Spell && (lowered.Contains("quake") || lowered.Contains("q mega") || lowered.Contains("q slash") || lowered.Contains("q fall") || lowered.Contains("q2 ") || lowered.Contains("q1 "))};
+        __state=new DamageSnapshot{hp=__instance.hp,type=__0.AttackType,source=source,mantis=MantisTelemetry.BeforeHit(__instance),quake=__0.AttackType==AttackTypes.Spell && (lowered.Contains("quake") || lowered.Contains("q mega") || lowered.Contains("q slash") || lowered.Contains("q fall") || lowered.Contains("q2 ") || lowered.Contains("q1 "))};
     }
     static void AfterDamage(HealthManager __instance, DamageSnapshot __state) {
+        MantisTelemetry.BossDamage(__instance,__state.hp,__state.quake,__state.type==AttackTypes.Nail || __state.type==AttackTypes.NailBeam,__state.type==AttackTypes.Spell,__state.source,__state.mantis);
         if(self!=null && !self.resetting && self.boss==__instance && __instance.hp<__state.hp) {
             int damage=Math.Min(__state.hp,__state.hp-__instance.hp);
             self.effectiveHits++;
@@ -96,34 +117,39 @@ public class TrainingBridge : BaseUnityPlugin {
         }
     }
     static void BeforeHealth(PlayerData __instance,out int __state){__state=__instance.health;}
-    static void AfterAttack(GlobalEnums.AttackDirection __0){if(TrackingHealth()){self.attackStarts++;self.lastAttackDirection=__0.ToString();if(self.lastAttackDirection=="upward")self.upAttacks++;if(self.lastAttackDirection=="downward")self.downAttacks++;}}
-    static void AfterDash(){if(TrackingHealth())self.dashStarts++;}
-    static void AfterJump(){if(TrackingHealth())self.jumpStarts++;}
-    static void AfterWallJump(){if(TrackingHealth())self.wallJumpStarts++;}
+    static void BeforeHeroDamage(GameObject __0,int __3,out MantisTelemetry.IncomingContext __state){__state=MantisTelemetry.BeginIncoming(__0,__3);}
+    static void AfterHeroDamage(MantisTelemetry.IncomingContext __state){MantisTelemetry.EndIncoming(__state);}
+    static bool TrackingActions(){return TrackingHealth() || (self!=null && self.ownsInput && !self.mantisEntering && MantisTelemetry.IsEncounter);}
+    static void AfterAttack(GlobalEnums.AttackDirection __0){if(TrackingActions()){self.attackStarts++;self.lastAttackDirection=__0.ToString();if(self.lastAttackDirection=="upward")self.upAttacks++;if(self.lastAttackDirection=="downward")self.downAttacks++;}}
+    static void AfterDash(){if(TrackingActions())self.dashStarts++;}
+    static void AfterJump(){if(TrackingActions())self.jumpStarts++;}
+    static void AfterWallJump(){if(TrackingActions())self.wallJumpStarts++;}
     static bool TrackingHealth(){return self!=null && !self.resetting && self.sawBoss && UnityEngine.SceneManagement.SceneManager.GetActiveScene().name=="GG_Gruz_Mother";}
-    static void AfterHurt(PlayerData __instance,int __state){if(TrackingHealth())self.heroDamageTaken+=Math.Max(0,__state-__instance.health);}
+    static void AfterHurt(PlayerData __instance,int __state){MantisTelemetry.HeroHealth(__state-__instance.health,0);if(TrackingHealth())self.heroDamageTaken+=Math.Max(0,__state-__instance.health);}
     static void AfterHeal(PlayerData __instance,int __state){
+        MantisTelemetry.HeroHealth(0,__instance.health-__state);
         if(!TrackingHealth())return;
         int amount=Math.Max(0,__instance.health-__state);self.heroHealed+=amount;
         if(amount>0 && HeroController.instance!=null && HeroController.instance.cState.focusing)self.focusHeals+=amount;
     }
     static void BossDied(HealthManager __instance) {
+        MantisTelemetry.ActorDied(__instance);
         if(self!=null && !self.resetting && self.boss==__instance) {
             self.won=true;
             self.Logger.LogInfo("Confirmed Gruz Mother death event");
         }
     }
     static bool FloatInput(OneAxisInputControl __instance, ref float __result) {
-        int i; if (self == null || !self.inputs.TryGetValue(__instance,out i)) return true;
+        int i; if (self == null || !self.ownsInput || !self.inputs.TryGetValue(__instance,out i)) return true;
         __result = self.held[i] && __instance.EnabledInHierarchy ? 1f : 0f; return false;
     }
     static bool BoolInput(OneAxisInputControl __instance, MethodBase __originalMethod, ref bool __result) {
-        int i; if (self == null || !self.inputs.TryGetValue(__instance,out i)) return true;
+        int i; if (self == null || !self.ownsInput || !self.inputs.TryGetValue(__instance,out i)) return true;
         string n=__originalMethod.Name;
         __result=__instance.EnabledInHierarchy && (n=="get_WasPressed" ? self.held[i]&&!self.previous[i] : n=="get_WasReleased" ? !self.held[i]&&self.previous[i] : self.held[i]); return false;
     }
     void Serve() {
-        try { while(true) {
+        try { while(serverRunning) {
             try { using(var client=listener.AcceptTcpClient()) using(var stream=client.GetStream())
             using(var reader=new StreamReader(stream)) using(var writer=new StreamWriter(stream){AutoFlush=true}) {
                 string line; while((line=reader.ReadLine())!=null) {
@@ -131,11 +157,13 @@ public class TrainingBridge : BaseUnityPlugin {
                     if(!r.done.WaitOne(30000)) { writer.WriteLine("{\"error\":\"main thread timeout\"}"); break; }
                     writer.WriteLine(r.result);
                 }
-            }} catch(Exception e) { Array.Clear(held,0,held.Length); Logger.LogWarning("Client disconnected: "+e.Message); }
+            }} catch(Exception e) { if(!serverRunning)break;Array.Clear(held,0,held.Length); Logger.LogWarning("Client disconnected: "+e.Message); }
         }} catch(Exception e) { Logger.LogWarning(e.Message); }
     }
     void FixedUpdate() {
+        TrainingCurriculumProfile.Tick();
         physicsTicks++;
+        FalseKnightAudit.PhysicsSample(physicsTicks,inputMask);
         physicsGameTime+=(double)Time.fixedDeltaTime;
         // Stop at the physics boundary, not after a coroutine/render frame.
         if(syncMode && advancing && tickTarget>=0) {
@@ -150,6 +178,19 @@ public class TrainingBridge : BaseUnityPlugin {
         wasFocusing=focusing;wasQuaking=quaking;
     }
     void Update() {
+        MantisTelemetry.Sample();
+        FalseKnightAudit.Sample();
+        HornetTelemetry.Sample();
+        if(mantisEntering && HeroController.instance!=null && Time.realtimeSinceStartup-mantisLoadedAt>2f) {
+            var h=HeroController.instance;
+            AccessTools.Method(typeof(HeroController),"FinishedEnteringScene").Invoke(h,new object[]{false,false});h.RegainControl();
+            var rb=h.GetComponent<Rigidbody2D>();if(rb!=null)rb.bodyType=RigidbodyType2D.Dynamic;
+            if(GameCameras.instance!=null) {
+                var fade=AccessTools.Field(typeof(GameCameras),"cameraFadeFSM").GetValue(GameCameras.instance) as PlayMakerFSM;
+                if(fade!=null)fade.SendEvent("FADE SCENE IN");
+            }
+            mantisEntering=false;
+        }
         if(syncMode && !advancing) Time.timeScale=0f;
         if(queuedInput) {
             for(int i=0;i<held.Length;i++) held[i]=(queuedMask&(1<<i))!=0;
@@ -163,13 +204,57 @@ public class TrainingBridge : BaseUnityPlugin {
             inputs[a.cast]=8; // The game's ListenForCast FSM handles hold-to-focus via cast.
             Logger.LogInfo("Input bound");
         }
-        if(Time.realtimeSinceStartup-lastContact>35f) { Array.Clear(held,0,held.Length); if(syncMode) { advancing=false; Time.timeScale=0f; } }
+        if(ownsInput && Time.realtimeSinceStartup-lastContact>35f) {
+            StopAllCoroutines();
+            if(activeRequest!=null){activeRequest.result="{\"error\":\"training input lease expired\"}";activeRequest.done.Set();activeRequest=null;}
+            busy=false;ReleaseControl();
+        }
         if(!busy) { Request r=null; lock(requests) if(requests.Count>0) r=requests.Dequeue();
-            if(r!=null) { busy=true; lastContact=Time.realtimeSinceStartup; StartCoroutine(Execute(r)); }
+            if(r!=null) { busy=true;activeRequest=r; lastContact=Time.realtimeSinceStartup; StartCoroutine(Execute(r)); }
         }
     }
     void LateUpdate() { Array.Copy(held,previous,held.Length); }
+    public static void EnforcePauseBoundary() {
+        // Native hit-stop coroutines may restore timeScale after our early Update.
+        // Reassert only when the supervisor requests no physical advancement.
+        if(self!=null && self.syncMode && !self.advancing)Time.timeScale=0f;
+    }
+    void ReleaseControl() {
+        TrainingCurriculumProfile.Restore();
+        ownsInput=false;Array.Clear(held,0,held.Length);Array.Clear(previous,0,previous.Length);
+        inputMask=0;queuedInput=false;queuedMask=0;
+        if(originalMaximumDeltaTime>0f){Time.maximumDeltaTime=originalMaximumDeltaTime;originalMaximumDeltaTime=-1f;}
+        defenseOnly=false;syncMode=false;advancing=false;tickTarget=-1;pulseStopTick=-1;Time.timeScale=1f;
+    }
     IEnumerator Execute(Request r) {
+        if(r.text=="curriculum graph"){
+            try{r.result=TrainingCurriculumProfile.Graph();}catch(Exception e){r.result="{\"error\":\""+e.Message.Replace("\"","")+"\"}";}
+            r.done.Set();busy=false;yield break;
+        }
+        if(r.text.StartsWith("curriculum profile ")){
+            try{
+                if(!syncMode||advancing||!ownsInput)throw new InvalidOperationException("Paused owned input required");
+                string[] fields=r.text.Split(' ');
+                if(fields.Length!=7 || fields[6]!="v5")throw new ArgumentException("profile name seed speed family v5 required");
+                TrainingCurriculumProfile.Configure(fields[2],int.Parse(fields[3]),float.Parse(fields[4],System.Globalization.CultureInfo.InvariantCulture),fields[5]);
+                r.result=State();
+            }catch(Exception e){TrainingCurriculumProfile.Restore();r.result="{\"error\":\""+e.Message.Replace("\"","")+"\"}";}
+            r.done.Set();busy=false;yield break;
+        }
+        if(r.text=="mantis state") {
+            try{r.result=MantisTelemetry.State();}catch(Exception e){r.result="{\"error\":\""+e.GetType().Name+"\"}";Logger.LogError(e);}
+            r.done.Set();busy=false;yield break;
+        }
+        if(r.text.StartsWith("false-knight audit ")) {
+            try{r.result=FalseKnightAudit.Command(r.text.Substring("false-knight audit ".Length));}
+            catch(Exception e){r.result="{\"error\":\"audit_command_failed\"}";Logger.LogError(e);}
+            r.done.Set();busy=false;yield break;
+        }
+        if(r.text=="mantis diagnostic defeat-active") {
+            try{if(!syncMode || advancing || !ownsInput || !MantisTelemetry.IsEncounter)throw new InvalidOperationException();MantisTelemetry.DiagnosticDefeatActive();r.result=MantisTelemetry.State();}
+            catch(Exception e){r.result="{\"error\":\""+e.GetType().Name+"\"}";}
+            r.done.Set();busy=false;yield break;
+        }
         if(r.text.StartsWith("tick ")) {
             int mask=0,pulse=0,tickFrames=4;
             try {
@@ -202,6 +287,7 @@ public class TrainingBridge : BaseUnityPlugin {
                 pulseMask=int.Parse(parts[1]); pulseBits=int.Parse(parts[2]);
                 if(pulseMask<0 || pulseMask>511 || pulseBits<0 || pulseBits>511) throw new ArgumentException();
                 if(defenseOnly && (pulseMask & ~23)!=0) throw new ArgumentException();
+                ownsInput=true;
                 for(int i=0;i<held.Length;i++) held[i]=((pulseMask & ~pulseBits)&(1<<i))!=0;
             } catch(Exception) { r.result="{\"error\":\"invalid pulse\"}"; }
             if(r.result==null && pulseBits!=0) {
@@ -214,8 +300,9 @@ public class TrainingBridge : BaseUnityPlugin {
 
         }
         try {
-            if(r.text=="sync on") { if(originalMaximumDeltaTime<0f) originalMaximumDeltaTime=Time.maximumDeltaTime; Time.maximumDeltaTime=Time.fixedDeltaTime; syncMode=true;advancing=false;tickTarget=-1;pulseStopTick=-1;Time.timeScale=0f; }
-            else if(r.text=="sync off") { if(originalMaximumDeltaTime>0f) { Time.maximumDeltaTime=originalMaximumDeltaTime;originalMaximumDeltaTime=-1f; } syncMode=false;advancing=false;tickTarget=-1;pulseStopTick=-1;Time.timeScale=1f; }
+            if(r.text=="sync on") { ownsInput=true;if(originalMaximumDeltaTime<0f) originalMaximumDeltaTime=Time.maximumDeltaTime; Time.maximumDeltaTime=Time.fixedDeltaTime; syncMode=true;advancing=false;tickTarget=-1;pulseStopTick=-1;Time.timeScale=0f; }
+            else if(r.text=="sync off") { ReleaseControl(); }
+            else if(r.text=="display training") { Screen.SetResolution(1280,720,FullScreenMode.Windowed); }
             else if(r.text=="mode dodge") {
                 defenseOnly=true;
                 Logger.LogInfo("Dodge mode infiniteAirJump before normalization: "+PlayerData.instance.infiniteAirJump);
@@ -238,6 +325,29 @@ public class TrainingBridge : BaseUnityPlugin {
                 Time.timeScale=speed;
             }
             else if(r.text=="load") GameManager.instance.LoadGameFromUI(4);
+            else if(r.text=="hornet reset") {
+                ReleaseControl();ownsInput=true;HornetTelemetry.Reset();
+            }
+            else if(r.text=="false-knight reset") {
+                ReleaseControl();ownsInput=true;
+                BossSequenceController.Reset();PlayerData.instance.currentBossSequence=null;
+                PlayerData.instance.infiniteAirJump=false;
+                PlayerData.instance.health=PlayerData.instance.maxHealth;PlayerData.instance.MPCharge=0;
+                PlayerData.instance.bossStatueTargetLevel=0;
+                BossSceneController.SetupEvent-=ConfigureFalseKnight;BossSceneController.SetupEvent+=ConfigureFalseKnight;
+                GameManager.instance.BeginSceneTransition(new GameManager.SceneLoadInfo { SceneName="GG_False_Knight", EntryGateName="door_dreamEnter", EntryDelay=0f, Visualization=GameManager.SceneLoadVisualizations.GodsAndGlory });
+            }
+            else if(r.text=="mantis reset") {
+                attackStarts=upAttacks=downAttacks=dashStarts=jumpStarts=wallJumpStarts=0;
+                ownsInput=true;Array.Clear(held,0,held.Length);Array.Clear(previous,0,previous.Length);
+                inputMask=0;tickTarget=-1;pulseStopTick=-1;syncMode=false;advancing=true;Time.timeScale=1f;
+                BossSequenceController.Reset();PlayerData.instance.currentBossSequence=null;
+                PlayerData.instance.infiniteAirJump=false;
+                PlayerData.instance.health=PlayerData.instance.maxHealth;PlayerData.instance.MPCharge=0;
+                PlayerData.instance.bossStatueTargetLevel=1;
+                BossSceneController.SetupEvent-=ConfigureMantis;BossSceneController.SetupEvent+=ConfigureMantis;
+                GameManager.instance.BeginSceneTransition(new GameManager.SceneLoadInfo { SceneName="GG_Mantis_Lords_V", EntryGateName="door_dreamEnter", EntryDelay=0f, Visualization=GameManager.SceneLoadVisualizations.GodsAndGlory });
+            }
             else if(r.text=="reset") {
                 nailHits=0;nailDamage=0;spellHits=0;spellDamage=0;quakeHits=0;quakeDamage=0;
                 heroDamageTaken=0;heroHealed=0;focusStarts=0;focusHeals=0;quakeCasts=0;wasFocusing=false;wasQuaking=false;focusStartedAt=0;
@@ -250,8 +360,10 @@ public class TrainingBridge : BaseUnityPlugin {
                 PlayerData.instance.bossStatueTargetLevel=0;
                 GameManager.instance.BeginSceneTransition(new GameManager.SceneLoadInfo { SceneName="GG_Gruz_Mother", EntryGateName="door_dreamEnter", EntryDelay=0f, Visualization=GameManager.SceneLoadVisualizations.GodsAndGlory });
             } else if(r.text.StartsWith("step ")) {
+                ownsInput=true;
                 int mask=int.Parse(r.text.Substring(5)); if(defenseOnly && (mask & ~23)!=0) throw new ArgumentException(); for(int i=0;i<held.Length;i++) held[i]=(mask&(1<<i))!=0;
-            } else if(r.text=="release") { Array.Clear(held,0,held.Length); if(originalMaximumDeltaTime>0f) { Time.maximumDeltaTime=originalMaximumDeltaTime;originalMaximumDeltaTime=-1f; } Time.timeScale=1f; defenseOnly=false;syncMode=false;advancing=false;tickTarget=-1;pulseStopTick=-1; }
+            } else if(r.text=="release") { ReleaseControl(); }
+            else if(r.text!="state")throw new ArgumentException("Unknown bridge command");
         } catch(Exception e) { r.result="{\"error\":\""+e.GetType().Name+"\"}"; }
         if(stepping && r.result==null) for(int i=0;i<3;i++) yield return new WaitForFixedUpdate();
         if(r.result==null) { try { r.result=State(); } catch(Exception e) { r.result="{\"error\":\""+e.GetType().Name+"\"}"; Logger.LogError(e); } }
@@ -307,7 +419,7 @@ public class TrainingBridge : BaseUnityPlugin {
             }
         }
         colliders.Sort((a,b)=>HazardPriority(a,center).CompareTo(HazardPriority(b,center)));
-        for(int i=0;i<Math.Min(6,colliders.Count);i++) {
+        for(int i=0;i<Math.Min(HornetTelemetry.IsEncounter?32:6,colliders.Count);i++) {
             var c=colliders[i];var d=sources[c];var b=c.bounds;var rb=c.attachedRigidbody;
             Vector2 v=rb!=null?rb.linearVelocity:Vector2.zero;
             int id=c.GetInstanceID();Vector2 before;float beforeTime;
@@ -423,7 +535,15 @@ public class TrainingBridge : BaseUnityPlugin {
         skills+=",\"nail_art_state\":\""+artState.Replace("\"","\\\"")+"\",\"spell_control_state\":\""+spellState.Replace("\"","\\\"")+"\",\"hero_nailArt_active\":"+(hero!=null && hero.cState.freezeCharge && artState!="Idle" && artState!="Inactive"?1:0);
         skills+=",\"attack_starts\":"+attackStarts+",\"up_attacks\":"+upAttacks+",\"down_attacks\":"+downAttacks+",\"dash_starts\":"+dashStarts+",\"jump_starts\":"+jumpStarts+",\"wall_jump_starts\":"+wallJumpStarts;
         skills+=",\"art_hits\":"+artHits+",\"art_damage\":"+artDamage+",\"fireball_hits\":"+fireballHits+",\"fireball_damage\":"+fireballDamage+",\"scream_hits\":"+screamHits+",\"scream_damage\":"+screamDamage+",\"last_attack_direction\":\""+lastAttackDirection+"\"";
+        if(HornetTelemetry.IsEncounter)skills+=",\"hornet\":"+HornetTelemetry.State();
+        if(MantisTelemetry.IsEncounter)skills+=",\"mantis_snapshot\":"+MantisTelemetry.State()+",\"curriculum_profile\":"+TrainingCurriculumProfile.State();
         return payload.Substring(0,payload.Length-1)+skills+",\"effective_hits\":"+effectiveHits+",\"damage_dealt\":"+damageDealt+"}";
     }
-    void OnDestroy() { Array.Clear(held,0,held.Length); if(listener!=null)listener.Stop(); }
+    void OnDestroy() { serverRunning=false;ReleaseControl();if(listener!=null)listener.Stop(); }
+}
+
+[DefaultExecutionOrder(10000)]
+public class TrainingPauseGuard : MonoBehaviour {
+    void LateUpdate(){TrainingBridge.EnforcePauseBoundary();}
+    IEnumerator Start(){while(true){yield return new WaitForEndOfFrame();TrainingBridge.EnforcePauseBoundary();}}
 }
