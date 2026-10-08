@@ -26,6 +26,8 @@ class ContractTests(unittest.TestCase):
             l.reserve(True);l.settle()
             with self.assertRaises(RuntimeError):l.reserve(True)
             self.assertEqual(h.Ledger(p).data['actual'],5000)
+            l.data['note']='中文故障记录';h.write_json(p,l.data)
+            self.assertEqual(h.Ledger(p).data['note'],'中文故障记录')
 
     def test_pilot_stops_before_unverified_terminal_is_learned(self):
         s=dict(scene='GG_Hornet_1',hornet=dict(valid=True,hp=9))

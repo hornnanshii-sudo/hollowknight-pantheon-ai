@@ -119,7 +119,7 @@ def reward(old,new,coeff,ended=False,timeout=False):
 class Ledger:
     def __init__(self,path):
         self.path=Path(path)
-        self.data=json.loads(self.path.read_text()) if self.path.exists() else dict(actual=0,effective=0,evaluation=0,stage=0,stage_actual=[0,0,0],pending=None)
+        self.data=json.loads(self.path.read_text(encoding='utf8')) if self.path.exists() else dict(actual=0,effective=0,evaluation=0,stage=0,stage_actual=[0,0,0],pending=None)
         if self.data['pending'] is not None:raise RuntimeError('Uncertain executed action: reconcile before resuming')
     def reserve(self,training):
         d=self.data
