@@ -7,9 +7,16 @@ import numpy as np
 import gymnasium as gym
 from sb3_contrib import RecurrentPPO
 import hornet_core as h
-from hornet_train import Policy
+from hornet_train import Policy, preflight
 
 class ContractTests(unittest.TestCase):
+    def test_missing_acceptance_never_starts_training(self):
+        with tempfile.TemporaryDirectory() as d:
+            out=Path(d)
+            with self.assertRaises(RuntimeError):preflight(out)
+            report=json.loads((out/'startup-check.json').read_text())
+            self.assertFalse(report['passed']);self.assertFalse(report['model_created'])
+            self.assertFalse((out/'ledger.json').exists())
     def test_corrupted_event_or_timing_is_rejected(self):
         old=dict(scene='GG_Hornet_1',time=1.,physics_ticks=50,hp=9,hornet=dict(epoch=1,actor=2,damage=0,hurt=0,hits=0,attacks=0,hp=900,max_hp=900))
         new=dict(scene='GG_Hornet_1',time=1.04,physics_ticks=52,hp=8,hazard_count=0,hero_healed=0,soul=11,hornet=dict(epoch=1,actor=2,damage=9,hurt=1,hits=1,attacks=1,hp=891,max_hp=900,valid=True,events=[dict(kind='damage',amount=9),dict(kind='hurt',amount=1)]))

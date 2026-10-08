@@ -71,11 +71,27 @@ def gate(stage,rows):
     wins=[r for r in rows if r['win']]
     return len(wins)>=16 and np.mean([r['hurt'] for r in wins])<=2
 
+def preflight(out):
+    """Report missing evidence without constructing a model or taking game control."""
+    evidence={};reasons=[]
+    for name in ('acceptance','calibration','initial-state'):
+        path=out/(name+'.json')
+        try:evidence[name]=json.loads(path.read_text(encoding='utf8'))
+        except (OSError,ValueError) as e:reasons.append(f'{name}: {type(e).__name__}')
+    a=evidence.get('acceptance',{});c=evidence.get('calibration',{})
+    if not a.get('passed'):reasons.append('Native event acceptance has not passed')
+    if not a.get('independent_event_review_passed'):reasons.append('Independent event review has not passed')
+    if not c.get('passed'):reasons.append('Reward calibration has not passed')
+    if reasons:
+        h.write_json(out/'startup-check.json',dict(passed=False,reasons=reasons,model_created=False))
+        raise RuntimeError('; '.join(reasons))
+    h.write_json(out/'startup-check.json',dict(passed=True))
+    return evidence
+
 def main():
     p=argparse.ArgumentParser();p.add_argument('--run',type=Path,default=Path('artifacts/hornet-v1'));a=p.parse_args();out=a.run
-    acceptance=json.loads((out/'acceptance.json').read_text());calibration=json.loads((out/'calibration.json').read_text())
-    if not acceptance.get('passed') or not acceptance.get('independent_event_review_passed') or not calibration.get('passed'):raise RuntimeError('Environment acceptance and calibration are mandatory')
-    phases=json.loads((out/'initial-state.json').read_text())['hornet']['phase_names']
+    evidence=preflight(out);calibration=evidence['calibration']
+    phases=evidence['initial-state']['hornet']['phase_names']
     coeff=calibration['coefficients'];ledger=h.Ledger(out/'ledger.json')
     if ledger.data['actual'] or (out/'checkpoint.zip').exists():raise RuntimeError('Fresh-run entry refuses to overwrite/resume an existing run')
     env=Env(out,phases,coeff,ledger);ev=Env(out,phases,coeff,ledger,False)

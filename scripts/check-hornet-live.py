@@ -16,15 +16,25 @@ def choose(s,kind,step):
     nail=1 if kind!='wait' and kind!='retreat' and m[6] and (kind=='stationary' or abs(dx)<3.5 and abs(dy)<3) else 0
     # This is an explicit heuristic probe, never a policy demonstration dataset.
     jump=int(kind=='counter' and m[4] and ('Dash' in b['phase'] or 'Throw' in b['phase']) and abs(dx)<9)
+    if kind=='careful':
+        phase=b['phase'];away=1 if dx>0 else 2;toward=2 if dx>0 else 1
+        dangerous=any(x in phase for x in ('Sphere','Throw','Thrown'))
+        move=away if dangerous and abs(dx)<8 else toward if not dangerous and abs(dx)>2.5 else 0
+        if 'ADash' in phase or phase=='A Dash':move=away
+        jump=int(bool(m[4]) and ('GDash' in phase or phase=='G Dash') and abs(dx)<11)
+        nail=int(bool(m[6]) and not dangerous and abs(dx)<3.7 and abs(dy)<3)
+        if dy>1.5 and abs(dx)<2 and nail:nail=2
+        if dy<-.5 and abs(dx)<2.5 and nail:nail=3
     return [move,jump,nail,0]
 
 def main():
-    p=argparse.ArgumentParser();p.add_argument('--out',type=Path,default=Path('artifacts/hornet-v1'));p.add_argument('--episodes',type=int,default=2);a=p.parse_args()
+    p=argparse.ArgumentParser();p.add_argument('--out',type=Path,default=Path('artifacts/hornet-v1'));p.add_argument('--episodes',type=int,default=2);p.add_argument('--kinds',nargs='+',choices=['wait','stationary','approach','counter','retreat','careful'],default=['wait','stationary','approach','counter','retreat']);a=p.parse_args()
     a.out.mkdir(parents=True,exist_ok=True);rows=[];phases=set();errors=[]
     try:
-        for kind in ('wait','stationary','approach','counter','retreat'):
+        for kind in a.kinds:
             for ep in range(a.episodes):
                 s=h.reset();start=s['time'];initial=s;steps=0
+                if not rows:h.write_json(a.out/'initial-state.json',initial)
                 file=a.out/f'audit-{kind}-{ep}.jsonl'
                 with file.open('w',encoding='utf8') as f:
                     f.write(json.dumps({'initial':s})+'\n')
