@@ -11,8 +11,25 @@ import hornet_core as h
 from hornet_train import Policy, preflight
 from hornet_pilot import PilotLedger, suspected_completion
 from hornet_long import LongLedger
+from hornet_logging import TracePolicy
+from hornet_v2 import course_profile,select_course
 
 class ContractTests(unittest.TestCase):
+    def test_reset_rejects_previous_scene_and_locked_controls(self):
+        ready=dict(scene='GG_Hornet_1',body_type=0,grounded=1,invulnerable=0,can_jump=1,can_attack=1,can_dash=1,hp=9,soul=0,hasShadowDash=0,hasDoubleJump=0,hornet=dict(epoch=1,valid=True,opening_applied=True,hurt=0,damage=0,nail_damage=9))
+        locked=copy.deepcopy(ready);locked['hornet']['epoch']=2;locked['can_attack']=0
+        new=copy.deepcopy(ready);new['hornet']['epoch']=2
+        with patch.object(h,'request',side_effect=[ready,ready,ready,locked,new,{},new]) as req,patch.object(h.time,'sleep'):
+            self.assertEqual(h.reset()['hornet']['epoch'],2)
+            self.assertEqual(req.call_count,7)
+    def test_course_fades_and_selection_rejects_worse_hurt(self):
+        import random
+        rng=random.Random(42)
+        self.assertEqual({course_profile(40000,rng) for _ in range(100)},{'native'})
+        self.assertEqual({course_profile(0,rng) for _ in range(100)},{'native','near-left','near-right'})
+        a=dict(mean_damage=10,mean_hurt=3,hit_episodes=2)
+        self.assertFalse(select_course(a,dict(mean_damage=20,mean_hurt=4,hit_episodes=3)))
+        self.assertTrue(select_course(a,dict(mean_damage=20,mean_hurt=3,hit_episodes=3)))
     def test_long_continuation_cannot_reset_total_budget(self):
         with tempfile.TemporaryDirectory() as d:
             p=Path(d)/'ledger.json';l=LongLedger(p)
@@ -104,7 +121,7 @@ class ContractTests(unittest.TestCase):
                 assert a[1]==a[2]==a[3]==0, a
                 self.i+=1
                 return self.obs(),float(a[0]==2),self.i==7,False,{}
-        model=RecurrentPPO(Policy,Fake(),n_steps=16,batch_size=8,n_epochs=1,device='cpu',policy_kwargs=dict(lstm_hidden_size=8,net_arch=dict(pi=[8],vf=[8])))
+        model=RecurrentPPO(TracePolicy,Fake(),n_steps=16,batch_size=8,n_epochs=1,device='cpu',policy_kwargs=dict(lstm_hidden_size=8,net_arch=dict(pi=[8],vf=[8])))
         model.learn(32)
         from sb3_contrib.common.recurrent.buffers import RecurrentRolloutBuffer
         model.n_steps=17
@@ -112,6 +129,8 @@ class ContractTests(unittest.TestCase):
         model.rollout_buffer=RecurrentRolloutBuffer(17,model.observation_space,model.action_space,(17,1,1,8),device=model.device,gamma=model.gamma,gae_lambda=model.gae_lambda,n_envs=1)
         model.learn(17,reset_num_timesteps=False)
         self.assertEqual(model.num_timesteps,49)
+        for head,n in zip(model.policy.last_decision['probabilities'],h.HEADS):
+            self.assertEqual(len(head[0]),n);self.assertAlmostEqual(sum(head[0]),1,places=5)
         self.assertTrue(all(np.isfinite(p.detach().numpy()).all() for p in model.policy.parameters()))
 
 if __name__=='__main__':unittest.main()

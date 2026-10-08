@@ -44,13 +44,15 @@ def request(command):
     if 'error' in data:raise RuntimeError((command,data))
     return data
 
-def reset():
-    request('hornet reset')
+def reset(opening='native'):
+    if opening not in ('native','near-left','near-right'):raise ValueError('Unknown opening')
+    previous_epoch=request('state').get('hornet',{}).get('epoch')
+    request('hornet reset' if opening=='native' else 'hornet reset '+opening)
     end=time.monotonic()+30
     while time.monotonic()<end:
         time.sleep(.1);s=request('state')
         h=s.get('hornet',{})
-        if s['scene']=='GG_Hornet_1' and h.get('valid') and s['body_type']==0 and s['grounded'] and not s['invulnerable']:
+        if s['scene']=='GG_Hornet_1' and h.get('epoch')!=previous_epoch and h.get('valid') and h.get('opening_applied',opening=='native') and s['body_type']==0 and s['grounded'] and not s['invulnerable'] and s['can_jump'] and s['can_attack'] and s['can_dash']:
             request('mode combat');s=request('sync on')
             if s['hp']!=9 or s['soul']!=0 or s['hornet']['hurt'] or s['hornet']['damage']:raise RuntimeError('Opening already changed before synchronized sampling')
             if s['hasShadowDash'] or s['hasDoubleJump'] or s['hornet']['nail_damage']!=9:raise RuntimeError('Player configuration mismatch')

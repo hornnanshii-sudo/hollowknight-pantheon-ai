@@ -325,8 +325,8 @@ public class TrainingBridge : BaseUnityPlugin {
                 Time.timeScale=speed;
             }
             else if(r.text=="load") GameManager.instance.LoadGameFromUI(4);
-            else if(r.text=="hornet reset") {
-                ReleaseControl();ownsInput=true;HornetTelemetry.Reset();
+            else if(r.text=="hornet reset" || r.text.StartsWith("hornet reset ")) {
+                ReleaseControl();ownsInput=true;HornetTelemetry.Reset(r.text=="hornet reset"?"native":r.text.Substring(13));
             }
             else if(r.text=="false-knight reset") {
                 ReleaseControl();ownsInput=true;

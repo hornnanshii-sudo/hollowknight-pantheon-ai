@@ -13,6 +13,8 @@ public static class HornetTelemetry {
     static BossSceneController controller;
     static int scene=-1,epoch,maxHp,damage,hurt,hits,attacks,deathId,bossId,sequence;
     static bool bossesDead,complete,armed;
+    static string opening="native";
+    static bool openingApplied=true;
     static string phase="";
     static double phaseAt;
     static readonly List<string> journal=new List<string>();
@@ -23,7 +25,9 @@ public static class HornetTelemetry {
     static void Dead(){bossesDead=true;Event("bosses_dead",0);}
     static void Complete(){complete=true;Event("scene_complete",0);}
     static void Configure(BossSceneController c){c.BossLevel=0;BossSceneController.SetupEvent-=Configure;}
-    public static void Reset(){
+    public static void Reset(string requestedOpening="native"){
+        if(requestedOpening!="native" && requestedOpening!="near-left" && requestedOpening!="near-right")throw new ArgumentException("Unknown opening");
+        opening=requestedOpening;openingApplied=opening=="native";
         armed=false;
         var p=PlayerData.instance;
         BossSequenceController.Reset();p.currentBossSequence=null;
@@ -73,6 +77,18 @@ public static class HornetTelemetry {
             foreach(var candidate in controller.bosses)if(candidate!=null && candidate.gameObject.scene.handle==scene)found.Add(candidate);
             if(found.Count==1){boss=found[0];bossId=boss.GetInstanceID();maxHp=boss.hp;armed=true;Event("registered",maxHp);}
         }
+        if(armed && !openingApplied && boss!=null && HeroController.instance!=null){
+            var hero=HeroController.instance;var hb=hero.GetComponent<Rigidbody2D>();var bb=boss.GetComponent<Rigidbody2D>();
+            if(hb!=null && bb!=null && hero.cState.onGround && Math.Abs(bb.linearVelocity.y)<.1f && Math.Abs(boss.transform.position.y-hero.transform.position.y)<1.5f && PlayerData.instance.health==9 && hurt==0 && damage==0){
+                var c=hero.GetComponent<Collider2D>();var dest=hero.transform.position;dest.x=boss.transform.position.x+(opening=="near-left"?-4.5f:4.5f);
+                Vector2 center=(Vector2)dest+(Vector2)(c.bounds.center-hero.transform.position);int layer=LayerMask.NameToLayer("Terrain");
+                var floor=Physics2D.Raycast(center,Vector2.down,3f,1<<layer);
+                if(layer<0 || floor.collider==null || Physics2D.OverlapBox(center,c.bounds.size*.95f,0f,1<<layer)!=null)throw new InvalidOperationException("Unsafe opening geometry");
+                var face=AccessTools.Method(typeof(HeroController),opening=="near-left"?"FaceRight":"FaceLeft");
+                if(face==null)throw new InvalidOperationException("Missing native facing method");
+                hero.transform.position=dest;hb.position=dest;hb.linearVelocity=Vector2.zero;face.Invoke(hero,null);Physics2D.SyncTransforms();openingApplied=true;Event("opening:"+opening,0);
+            }
+        }
     }
     public static string State(){
         Sample();var b=boss!=null?boss.transform.position:Vector3.zero;var rb=boss!=null?boss.GetComponent<Rigidbody2D>():null;var v=rb!=null?rb.linearVelocity:Vector2.zero;
@@ -82,6 +98,6 @@ public static class HornetTelemetry {
         }
         names.Sort(StringComparer.Ordinal);var quoted=names.ConvertAll(Q);
         string e=string.Join(",",journal.ToArray());journal.Clear();
-        return "{\"schema\":\"hornet-v1\",\"epoch\":"+epoch+",\"actor\":"+bossId+",\"valid\":"+(boss!=null?"true":"false")+",\"max_hp\":"+maxHp+",\"hp\":"+(boss!=null?boss.hp:0)+",\"x\":"+N(b.x)+",\"y\":"+N(b.y)+",\"vx\":"+N(v.x)+",\"vy\":"+N(v.y)+",\"phase\":"+Q(phase)+",\"phase_age\":"+N(Time.fixedTimeAsDouble-phaseAt)+",\"phase_names\":["+string.Join(",",quoted.ToArray())+"],\"damage\":"+damage+",\"hurt\":"+hurt+",\"hits\":"+hits+",\"attacks\":"+attacks+",\"native_death\":"+(deathId!=0?"true":"false")+",\"bosses_dead\":"+(bossesDead?"true":"false")+",\"complete\":"+(complete?"true":"false")+",\"nail_damage\":"+PlayerData.instance.nailDamage+",\"events\":["+e+"]}";
+        return "{\"opening\":"+Q(opening)+",\"opening_applied\":"+(openingApplied?"true":"false")+",\"schema\":\"hornet-v1\",\"epoch\":"+epoch+",\"actor\":"+bossId+",\"valid\":"+(boss!=null?"true":"false")+",\"max_hp\":"+maxHp+",\"hp\":"+(boss!=null?boss.hp:0)+",\"x\":"+N(b.x)+",\"y\":"+N(b.y)+",\"vx\":"+N(v.x)+",\"vy\":"+N(v.y)+",\"phase\":"+Q(phase)+",\"phase_age\":"+N(Time.fixedTimeAsDouble-phaseAt)+",\"phase_names\":["+string.Join(",",quoted.ToArray())+"],\"damage\":"+damage+",\"hurt\":"+hurt+",\"hits\":"+hits+",\"attacks\":"+attacks+",\"native_death\":"+(deathId!=0?"true":"false")+",\"bosses_dead\":"+(bossesDead?"true":"false")+",\"complete\":"+(complete?"true":"false")+",\"nail_damage\":"+PlayerData.instance.nailDamage+",\"events\":["+e+"]}";
     }
 }

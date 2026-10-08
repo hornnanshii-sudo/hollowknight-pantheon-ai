@@ -30,12 +30,14 @@ class Env(gym.Env):
         self.observation_space=gym.spaces.Box(-5,5,(size,),dtype=np.float32)
         self.rows=[]
     def reset(self,seed=None,options=None):
-        super().reset(seed=seed);self.s=h.reset();self.start=self.s['time'];self.parts={};self.steps=0;self.first_hit=None
+        super().reset(seed=seed);self.s=h.reset(getattr(self,'reset_profile','native'));self.start=self.s['time'];self.parts={};self.steps=0;self.first_hit=None
         return h.observation(self.s,self.phases,0,self.cap),{}
     def step(self,action):
         mask,pulse=h.buttons(action,self.s)
+        self.last_command=dict(mask=mask,pulse=pulse,ticks=2)
         self.ledger.reserve(self.training)
         new=h.request(f'tick {mask} {pulse} 2')
+        self.last_raw=new
         # Executed samples count even when validation subsequently rejects this batch.
         self.ledger.settle();h.validate(self.s,new)
         self.steps+=1;elapsed=new['time']-self.start
